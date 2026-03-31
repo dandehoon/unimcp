@@ -83,7 +83,7 @@ Create an `mcp.json` anywhere (default: `~/.config/unimcp/mcp.json`). Override w
       "url": "https://example.com/mcp",
       "headers": { "Authorization": "Bearer ${MY_TOKEN}" }
     },
-    // Limit which tools are exposed (glob patterns)
+    // Limit which tools are exposed from this server (glob patterns)
     "big-server": {
       "type": "http",
       "url": "https://big.example.com/mcp",
@@ -98,6 +98,39 @@ Secrets go in `.env` next to `mcp.json` (or set them in your shell environment):
 ```bash
 MY_TOKEN=your-token-here
 ```
+
+### Per-client tool filtering
+
+Use the `clients` section to control which tools each editor sees. Filters use the same glob patterns as per-server `tools` filters, applied on top of them:
+
+```jsonc
+{
+  "mcpServers": {
+    "searxng": { "command": "docker", "args": ["run", "-i", "--rm", "dandehoon/searxng-mcp:edge"] },
+    "fetch":   { "command": "fetch-mcp" },
+    "context7": { "type": "http", "url": "https://mcp.context7.com/mcp" }
+  },
+  "clients": {
+    // Claude Code has its own web search — hide searxng
+    "claude":   { "tools": { "exclude": ["searxng__*"] } },
+    // VS Code Copilot has built-in fetch and search — hide both
+    "copilot":  { "tools": { "exclude": ["searxng__*", "fetch__*"] } },
+    // OpenCode gets everything
+    "opencode": { "tools": { "include": ["*"] } }
+  }
+}
+```
+
+Client identity is determined by the `UNIMCP_CLIENT` env var, which `unimcp setup` injects automatically into each editor's registration:
+
+| Editor | Client name |
+|--------|-------------|
+| Claude Code | `claude` |
+| Cursor | `cursor` |
+| VS Code / GitHub Copilot | `copilot` |
+| OpenCode | `opencode` |
+
+Editors without a matching `clients` entry see all tools (open default).
 
 ## Collect
 
@@ -152,3 +185,4 @@ pnpm install-bin     # build + install to /usr/local/bin/unimcp
 | `PORT`   | `4848`      | HTTP server preferred port   |
 | `HOST`   | `127.0.0.1` | HTTP server bind address     |
 | `CONFIG` | `~/.config/unimcp/mcp.json` | Path to server config file (overridden by `--mcp-file`) |
+| `UNIMCP_CLIENT` | _(unset)_ | Client identity sent to daemon as `X-Client-Name` header; used to apply per-client tool filters from the `clients` config section. Set automatically by `unimcp setup`. |
