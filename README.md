@@ -182,7 +182,7 @@ pnpm install-bin     # build + install to /usr/local/bin/unimcp
 
 | Variable | Default     | Description                  |
 | -------- | ----------- | ---------------------------- |
-| `PORT`   | `4848`      | HTTP server preferred port   |
-| `HOST`   | `127.0.0.1` | HTTP server bind address     |
-| `CONFIG` | `~/.config/unimcp/mcp.json` | Path to server config file (overridden by `--mcp-file`) |
+| `UNIMCP_PORT`   | `4848`      | HTTP server preferred port (also accepts legacy `PORT`)   |
+| `UNIMCP_HOST`   | `127.0.0.1` | HTTP server bind address (also accepts legacy `HOST`)     |
+| `UNIMCP_CONFIG` | `~/.config/unimcp/mcp.json` | Path to server config file — overridden by `--mcp-file` (also accepts legacy `CONFIG`) |
 | `UNIMCP_CLIENT` | _(unset)_ | Client identity sent to daemon as `X-Client-Name` header; used to apply per-client tool filters from the `clients` config section. Set automatically by `unimcp setup`. |

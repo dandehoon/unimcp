@@ -6,8 +6,8 @@ import { runSetup } from "./setup.js";
 import { runCollect } from "./collect.js";
 import { DEFAULT_MCP_FILE } from "./config.js";
 
-const PORT = Number(process.env.PORT ?? 4848);
-const HOST = process.env.HOST ?? "127.0.0.1";
+const PORT = Number(process.env.UNIMCP_PORT ?? process.env.PORT ?? 4848);
+const HOST = process.env.UNIMCP_HOST ?? process.env.HOST ?? "127.0.0.1";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -22,7 +22,7 @@ function resolveMcpFile(): string {
   if (flagIdx !== -1 && args[flagIdx + 1]) return args[flagIdx + 1];
   const inline = args.find((a) => a.startsWith("--mcp-file="));
   if (inline) return inline.slice("--mcp-file=".length);
-  return process.env.CONFIG ?? DEFAULT_MCP_FILE;
+  return process.env.UNIMCP_CONFIG ?? process.env.CONFIG ?? DEFAULT_MCP_FILE;
 }
 
 const CONFIG_PATH = resolveMcpFile();
