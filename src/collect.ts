@@ -1,0 +1,211 @@
+/**
+ * Collect command: reads MCP server configs from all known tool config files
+ * and merges them into a single unimcp-compatible mcpServers object.
+ *
+ * Usage:
+ *   unimcp collect                # print merged config to stdout
+ *   unimcp collect -o out.json    # write to file
+ *   unimcp collect --save         # write to ~/.config/unimcp/mcp.json (default mcp-file)
+ *   unimcp collect --save --mcp-file /path/to/mcp.json
+ */
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import path from "path";
+import os from "os";
+import type { ServerConfig } from "./config.js";
+import { DEFAULT_MCP_FILE } from "./config.js";
+
+const HOME = os.homedir();
+const CWD = process.cwd();
+
+type CollectOptions = {
+  outputPath: string | null;   // -o / --output
+  save: boolean;               // --save → write to mcp-file
+  mcpFilePath: string;         // --mcp-file or default
+};
+
+// --- source definitions ---
+
+type SourceReader = () => Record<string, ServerConfig>;
+
+type SourceDef = {
+  label: string;
+  read: SourceReader;
+};
+
+// --- public entry point ---
+
+export function runCollect(argv: string[]): void {
+  const opts = parseCollectArgs(argv);
+
+  const sources: SourceDef[] = [
+    { label: "Claude Code (user)",    read: readClaudeCodeUser },
+    { label: "Claude Code (project)", read: readClaudeCodeProject },
+    { label: "Cursor (global)",       read: () => readMcpServersFile(path.join(HOME, ".cursor", "mcp.json")) },
+    { label: "VS Code / Copilot",     read: readVsCodeGlobal },
+    { label: "OpenCode",              read: readOpenCode },
+    { label: ".mcp.json (cwd)",       read: () => readMcpServersFile(path.join(CWD, ".mcp.json")) },
+  ];
+
+  const merged: Record<string, ServerConfig> = {};
+  for (const src of sources) {
+    const servers = src.read();
+    const keys = Object.keys(servers);
+    if (keys.length > 0) {
+      console.error(`[collect] ${src.label}: ${keys.length} server(s) — ${keys.join(", ")}`);
+      Object.assign(merged, servers);
+    }
+  }
+
+  const output = { mcpServers: merged };
+  const json = JSON.stringify(output, null, 2) + "\n";
+
+  if (opts.save) {
+    const dest = opts.mcpFilePath;
+    mkdirSync(path.dirname(dest), { recursive: true });
+    writeFileSync(dest, json, "utf-8");
+    console.error(`[collect] saved ${Object.keys(merged).length} server(s) to ${dest}`);
+    return;
+  }
+
+  if (opts.outputPath) {
+    mkdirSync(path.dirname(opts.outputPath), { recursive: true });
+    writeFileSync(opts.outputPath, json, "utf-8");
+    console.error(`[collect] wrote ${Object.keys(merged).length} server(s) to ${opts.outputPath}`);
+    return;
+  }
+
+  // Default: print to stdout
+  process.stdout.write(json);
+}
+
+// --- helpers ---
+
+function parseCollectArgs(argv: string[]): CollectOptions {
+  const save = argv.includes("--save");
+  const mcpFilePath = parseFlagValue(argv, "--mcp-file") ?? DEFAULT_MCP_FILE;
+  const outputPath = parseFlagValue(argv, "-o") ?? parseFlagValue(argv, "--output");
+  return { save, mcpFilePath, outputPath };
+}
+
+function parseFlagValue(argv: string[], flag: string): string | null {
+  const idx = argv.indexOf(flag);
+  if (idx === -1) {
+    const inline = argv.find((a) => a.startsWith(flag + "="));
+    return inline ? inline.slice(flag.length + 1) : null;
+  }
+  return argv[idx + 1] ?? null;
+}
+
+/** Reads a plain {"mcpServers": {...}} file. Returns {} on missing/invalid. */
+function readMcpServersFile(filePath: string): Record<string, ServerConfig> {
+  if (!existsSync(filePath)) return {};
+  try {
+    const raw = readFileSync(filePath, "utf-8");
+    const config = JSON.parse(raw) as Record<string, unknown>;
+    return (config["mcpServers"] ?? {}) as Record<string, ServerConfig>;
+  } catch {
+    console.error(`[collect] warning: could not parse ${filePath}`);
+    return {};
+  }
+}
+
+/** Reads ~/.claude.json top-level mcpServers (Claude Code user scope). */
+function readClaudeCodeUser(): Record<string, ServerConfig> {
+  const filePath = path.join(HOME, ".claude.json");
+  if (!existsSync(filePath)) return {};
+  try {
+    const raw = readFileSync(filePath, "utf-8");
+    const config = JSON.parse(raw) as Record<string, unknown>;
+    return (config["mcpServers"] ?? {}) as Record<string, ServerConfig>;
+  } catch {
+    console.error(`[collect] warning: could not parse ${filePath}`);
+    return {};
+  }
+}
+
+/** Reads .mcp.json in cwd (Claude Code project scope). */
+function readClaudeCodeProject(): Record<string, ServerConfig> {
+  return readMcpServersFile(path.join(CWD, ".mcp.json"));
+}
+
+/** Reads VS Code Copilot global mcp.json (JSONC format). */
+function readVsCodeGlobal(): Record<string, ServerConfig> {
+  const filePath = path.join(HOME, "Library", "Application Support", "Code", "User", "mcp.json");
+  if (!existsSync(filePath)) return {};
+  try {
+    const raw = readFileSync(filePath, "utf-8");
+    const stripped = stripJsonComments(raw);
+    const config = JSON.parse(stripped) as Record<string, unknown>;
+    // VS Code uses "servers" key; remap to ServerConfig shape
+    const servers = (config["servers"] ?? {}) as Record<string, Record<string, unknown>>;
+    const result: Record<string, ServerConfig> = {};
+    for (const [name, srv] of Object.entries(servers)) {
+      if (srv["type"] === "http" || srv["url"]) {
+        result[name] = { type: "http", url: String(srv["url"] ?? ""), headers: srv["headers"] as Record<string, string> | undefined } as ServerConfig;
+      } else {
+        result[name] = { command: String(srv["command"] ?? ""), args: srv["args"] as string[] | undefined, env: srv["env"] as Record<string, string> | undefined } as ServerConfig;
+      }
+    }
+    return result;
+  } catch {
+    console.error(`[collect] warning: could not parse VS Code mcp.json`);
+    return {};
+  }
+}
+
+/** Reads OpenCode mcp section and maps to ServerConfig shape. */
+function readOpenCode(): Record<string, ServerConfig> {
+  const filePath = path.join(HOME, ".config", "opencode", "opencode.json");
+  if (!existsSync(filePath)) return {};
+  try {
+    const raw = readFileSync(filePath, "utf-8");
+    const config = JSON.parse(raw) as Record<string, unknown>;
+    const mcp = (config["mcp"] ?? {}) as Record<string, Record<string, unknown>>;
+    const result: Record<string, ServerConfig> = {};
+    for (const [name, srv] of Object.entries(mcp)) {
+      if (!srv["enabled"]) continue; // skip disabled servers
+      const cmd = srv["command"];
+      if (Array.isArray(cmd) && cmd.length > 0) {
+        result[name] = { command: String(cmd[0]), args: cmd.slice(1).map(String) } as ServerConfig;
+      }
+    }
+    return result;
+  } catch {
+    console.error(`[collect] warning: could not parse opencode.json`);
+    return {};
+  }
+}
+
+/**
+ * Strips // line comments and block comments from JSONC,
+ * respecting quoted string boundaries.
+ */
+function stripJsonComments(raw: string): string {
+  let result = "";
+  let i = 0;
+  while (i < raw.length) {
+    if (raw[i] === '"') {
+      result += raw[i++];
+      while (i < raw.length) {
+        const ch = raw[i];
+        result += ch;
+        i++;
+        if (ch === "\\" && i < raw.length) { result += raw[i++]; continue; }
+        if (ch === '"') break;
+      }
+      continue;
+    }
+    if (raw[i] === "/" && raw[i + 1] === "/") {
+      while (i < raw.length && raw[i] !== "\n") i++;
+      continue;
+    }
+    if (raw[i] === "/" && raw[i + 1] === "*") {
+      i += 2;
+      while (i < raw.length && !(raw[i] === "*" && raw[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    result += raw[i++];
+  }
+  return result;
+}

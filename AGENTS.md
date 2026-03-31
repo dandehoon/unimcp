@@ -14,7 +14,8 @@ src/
   server.ts      # Managed HTTP server (session tracking, hot-reload, auto-stop)
   daemon.ts      # Background daemon lifecycle (pid file + health check)
   bridge.ts      # Stdio ↔ HTTP bridge (used in default stdio mode)
-  setup.ts       # Editor registration (Claude Desktop, Cursor, VS Code, OpenCode)
+  setup.ts       # Editor registration (Claude Code, Cursor, VS Code/Copilot, OpenCode)
+  collect.ts     # Collect command: reads MCP configs from all editors, merges, outputs
 bin/
   unimcp.js      # npm launcher: finds bun and runs src/index.ts
 .github/
@@ -36,7 +37,8 @@ package.json     # pnpm project, scripts below
 pnpm dev            # stdio mode: ensure daemon + bridge
 pnpm http           # HTTP mode: managed server on :4848
 pnpm daemon         # alias for --http (explicit daemon invocation)
-pnpm register       # register unimcp in Claude Desktop, Copilot, OpenCode, Cursor
+pnpm collect        # print merged config from all editors to stdout
+pnpm register       # register unimcp in Claude Code, Copilot, OpenCode, Cursor
 
 # Type checking (no tests exist yet)
 pnpm typecheck      # tsc --noEmit — must pass before any commit
@@ -205,10 +207,16 @@ await client.connect(new StdioClientTransport({ command, args, env }));
 
 - `mcp.json` is **gitignored** — never commit it; it is user-local
 - `.env` is **gitignored** — secrets only; `${VAR}` in `mcp.json` is expanded at load time
+- The default mcp config is **`~/.config/unimcp/mcp.json`** (`DEFAULT_MCP_FILE` exported from `config.ts`); override with `--mcp-file` flag or `CONFIG` env var
 - The daemon pid file lives at **`~/.config/unimcp/daemon.pid`** (not in cwd)
   - Format: `"<pid>:<port>"` e.g. `"94663:4848"` or `"94844:52341"` (after port fallback)
   - `CONFIG_DIR` and `PID_FILE` constants are exported from `server.ts`, imported by `daemon.ts`
-  - Directory is created with `mkdirSync(..., { recursive: true })` before first write
+### Key constants
+```
+DEFAULT_MCP_FILE = ~/.config/unimcp/mcp.json     (config.ts)
+CONFIG_DIR       = ~/.config/unimcp              (server.ts)
+PID_FILE         = ~/.config/unimcp/daemon.pid   (server.ts)
+```
 - The daemon is a **shared background process** — `pnpm dev` bridges to it rather than spawning upstreams per client
 - **Auto port fallback**: server tries `preferredPort` (default 4848); if `EADDRINUSE`, falls back to port 0 (OS-assigned); actual port written to pid file so bridge always discovers the right port
 - `StreamableHTTPServerTransport` must be created **per request** (stateless: `sessionIdGenerator: undefined`)
@@ -217,24 +225,47 @@ await client.connect(new StdioClientTransport({ command, args, env }));
 
 ---
 
+## Collect command
+
+`unimcp collect` reads MCP server configs from all installed editors and merges them.
+
+```bash
+unimcp collect                       # print merged config to stdout
+unimcp collect -o out.json           # write to a file
+unimcp collect --save                # write to ~/.config/unimcp/mcp.json (default mcp-file)
+unimcp collect --save --mcp-file /path/to/mcp.json  # write to a custom file
+```
+
+Sources (in order, last-write-wins on name collision):
+1. Claude Code user scope (`~/.claude.json` → `mcpServers`)
+2. Claude Code project scope (`.mcp.json` in cwd → `mcpServers`)
+3. Cursor global (`~/.cursor/mcp.json` → `mcpServers`)
+4. VS Code / Copilot global (`~/Library/.../Code/User/mcp.json` → `servers`, remapped)
+5. OpenCode global (`~/.config/opencode/opencode.json` → `mcp`, remapped, enabled only)
+6. `.mcp.json` in cwd (same file as Claude Code project scope — deduplicated naturally)
+
+Output format: `{ "mcpServers": { ... } }` — directly usable as unimcp's mcp.json.
+
+---
+
 ## Setup / registration
 
 `unimcp setup` (or `pnpm register`) registers the binary in editor configs:
 
-**Local mode (default):** writes to `.cursor/mcp.json` and `.vscode/mcp.json` in the current directory. Always creates/updates.
+**Local mode (default):** writes to `.mcp.json` (claude-code), `.cursor/mcp.json` (cursor), `.vscode/mcp.json` (copilot) in the current directory. Always creates/updates.
 
 **Global mode (`--global`):** writes to user-level config files. Only updates if the config file already exists. Use `--target` to force-create.
 
-| Target            | Config file                                                       | Key          | Type value         |
-| ----------------- | ----------------------------------------------------------------- | ------------ | ------------------ |
-| Claude Desktop    | `~/Library/Application Support/Claude/claude_desktop_config.json` | `mcpServers` | _(implicit stdio)_ |
-| Cursor            | `~/.cursor/mcp.json`                                              | `mcpServers` | _(implicit stdio)_ |
-| VS Code / Copilot | `~/Library/Application Support/Code/User/mcp.json`                | `servers`    | `"stdio"`          |
-| OpenCode          | `~/.config/opencode/opencode.json`                                | `mcp`        | `"local"`          |
+| Target            | Local path (cwd)    | Global path                                      | Key          | Type value         |
+| ----------------- | ------------------- | ------------------------------------------------ | ------------ | ------------------ |
+| `claude-code`     | `.mcp.json`         | `~/.claude.json`                                 | `mcpServers` | _(implicit stdio)_ |
+| `cursor`          | `.cursor/mcp.json`  | `~/.cursor/mcp.json`                             | `mcpServers` | _(implicit stdio)_ |
+| `copilot`         | `.vscode/mcp.json`  | `~/Library/.../Code/User/mcp.json`               | `servers`    | `"stdio"`          |
+| `opencode`        | _(none)_            | `~/.config/opencode/opencode.json`               | `mcp`        | `"local"`          |
 
 - **Dedup**: skips a target if `"unimcp"` key already exists
-- **`--global --target=claude,copilot`**: force-write global even if file doesn't exist
-- Claude Desktop and OpenCode have no project-level equivalent (global only)
+- **`--global --target=claude-code,copilot`**: force-write global even if file doesn't exist
+- OpenCode has no project-level equivalent (global only)
 
 ---
 

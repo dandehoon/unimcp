@@ -49,20 +49,20 @@ unimcp setup --global
 unimcp setup --global --target claude,copilot   # force-write even if file doesn't exist
 ```
 
-Supported targets and their global config paths:
+Supported targets:
 
-| Target | Config file |
-|--------|-------------|
-| `claude` | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| `cursor` | `~/.cursor/mcp.json` |
-| `copilot` | `~/Library/Application Support/Code/User/mcp.json` |
-| `opencode` | `~/.config/opencode/opencode.json` |
+| Target | Local path (cwd) | Global path |
+|--------|-----------------|-------------|
+| `claude-code` | `.mcp.json` | `~/.claude.json` |
+| `cursor` | `.cursor/mcp.json` | `~/.cursor/mcp.json` |
+| `copilot` | `.vscode/mcp.json` | `~/Library/Application Support/Code/User/mcp.json` |
+| `opencode` | _(none)_ | `~/.config/opencode/opencode.json` |
 
 > Re-running `setup` is safe — already-registered targets are skipped (dedup).
 
 ## Configuration
 
-Create an `mcp.json` anywhere (default: `mcp.json` in cwd, or set `CONFIG=/path/to/mcp.json`):
+Create an `mcp.json` anywhere (default: `~/.config/unimcp/mcp.json`). Override with `--mcp-file` or the `CONFIG` env var:
 
 ```jsonc
 {
@@ -98,6 +98,19 @@ Secrets go in `.env` next to `mcp.json` (or set them in your shell environment):
 ```bash
 MY_TOKEN=your-token-here
 ```
+
+## Collect
+
+Import MCP server configs from all installed editors into your unimcp config:
+
+```bash
+unimcp collect                        # print merged config to stdout
+unimcp collect -o out.json            # write to a file
+unimcp collect --save                 # write to ~/.config/unimcp/mcp.json
+unimcp collect --save --mcp-file /path/to/mcp.json  # write to a custom file
+```
+
+Sources read: Claude Code (user scope `~/.claude.json`), Claude Code (project `.mcp.json`), Cursor global, VS Code/Copilot global, OpenCode global.
 
 ## Modes
 
@@ -136,4 +149,4 @@ pnpm install-bin     # build + install to /usr/local/bin/unimcp
 | -------- | ----------- | ---------------------------- |
 | `PORT`   | `4848`      | HTTP server preferred port   |
 | `HOST`   | `127.0.0.1` | HTTP server bind address     |
-| `CONFIG` | `mcp.json`  | Path to server config file   |
+| `CONFIG` | `~/.config/unimcp/mcp.json` | Path to server config file (overridden by `--mcp-file`) |

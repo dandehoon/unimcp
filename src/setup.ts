@@ -2,10 +2,16 @@
  * Setup command: registers unimcp as an MCP server in supported editors.
  *
  * Modes:
- *   unimcp setup              # local: write to .cursor/mcp.json + .vscode/mcp.json in cwd
+ *   unimcp setup              # local: write project-level config files in cwd
  *   unimcp setup --global     # global: update existing user-level configs only (no new files)
- *   unimcp setup --target claude,copilot           # local for those targets
- *   unimcp setup --global --target claude,copilot  # global, forced even if file doesn't exist
+ *   unimcp setup --target claude-code,copilot           # local for those targets
+ *   unimcp setup --global --target claude-code,copilot  # global, forced even if file doesn't exist
+ *
+ * Supported targets:
+ *   claude-code  local  → .mcp.json in cwd          global → ~/.claude.json (mcpServers key)
+ *   cursor       local  → .cursor/mcp.json           global → ~/.cursor/mcp.json
+ *   copilot      local  → .vscode/mcp.json           global → ~/Library/.../Code/User/mcp.json
+ *   opencode     global only → ~/.config/opencode/opencode.json
  */
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "fs";
 import path from "path";
@@ -17,44 +23,51 @@ const SERVER_NAME = "unimcp";
 
 // --- target definitions ---
 
-type TargetId = "claude" | "cursor" | "copilot" | "opencode";
+type TargetId = "claude-code" | "cursor" | "copilot" | "opencode";
 
 type TargetDef = {
   id: TargetId;
   label: string;
   globalConfigPath: string;
   localConfigPath: string | null; // null = no project-level equivalent
-  inject: (raw: string, binPath: string) => string;
+  injectGlobal: (raw: string, binPath: string) => string;
+  injectLocal: (raw: string, binPath: string) => string;
 };
 
 const TARGETS: TargetDef[] = [
   {
-    id: "claude",
-    label: "Claude Desktop",
-    globalConfigPath: path.join(HOME, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
-    localConfigPath: null, // Claude Desktop has no project-level config
-    inject: injectMcpServers,
+    id: "claude-code",
+    label: "Claude Code",
+    // user scope: ~/.claude.json top-level mcpServers
+    globalConfigPath: path.join(HOME, ".claude.json"),
+    // project scope: .mcp.json in cwd (committed to git, shared with team)
+    localConfigPath: path.join(CWD, ".mcp.json"),
+    injectGlobal: injectClaudeCodeGlobal,
+    injectLocal: injectMcpServers,
   },
   {
     id: "cursor",
     label: "Cursor",
     globalConfigPath: path.join(HOME, ".cursor", "mcp.json"),
     localConfigPath: path.join(CWD, ".cursor", "mcp.json"),
-    inject: injectMcpServers,
+    injectGlobal: injectMcpServers,
+    injectLocal: injectMcpServers,
   },
   {
     id: "copilot",
     label: "VS Code / GitHub Copilot",
     globalConfigPath: path.join(HOME, "Library", "Application Support", "Code", "User", "mcp.json"),
     localConfigPath: path.join(CWD, ".vscode", "mcp.json"),
-    inject: injectVsCodeServers,
+    injectGlobal: injectVsCodeServers,
+    injectLocal: injectVsCodeServers,
   },
   {
     id: "opencode",
     label: "OpenCode",
     globalConfigPath: path.join(HOME, ".config", "opencode", "opencode.json"),
     localConfigPath: null, // OpenCode has no project-level config
-    inject: injectOpenCode,
+    injectGlobal: injectOpenCode,
+    injectLocal: injectOpenCode,
   },
 ];
 
@@ -86,7 +99,7 @@ function registerLocal(targets: TargetDef[], binPath: string): void {
   }
 
   for (const target of localTargets) {
-    registerTarget(target.label, target.localConfigPath!, binPath, target.inject, true);
+    registerTarget(target.label, target.localConfigPath!, binPath, target.injectLocal, true);
   }
 }
 
@@ -102,7 +115,7 @@ function registerGlobal(targets: TargetDef[], binPath: string, force: boolean): 
       continue;
     }
 
-    registerTarget(target.label, configPath, binPath, target.inject, true);
+    registerTarget(target.label, configPath, binPath, target.injectGlobal, true);
     registered++;
   }
 
@@ -137,7 +150,6 @@ function registerTarget(
 }
 
 function resolveUnimcpBin(): string {
-  // Prefer the installed system binary; fall back to current process.
   const systemBin = "/usr/local/bin/unimcp";
   if (existsSync(systemBin)) return systemBin;
   return process.execPath;
@@ -153,14 +165,29 @@ function parseTargetFlag(argv: string[]): TargetId[] | null {
   return raw.split(",").map((s) => s.trim()) as TargetId[];
 }
 
-/** Injects into {"mcpServers": {...}} format (Claude Desktop, Cursor). */
+/**
+ * Injects into ~/.claude.json at top-level mcpServers (Claude Code user scope).
+ * Preserves all other keys (projects, settings, etc.).
+ */
+function injectClaudeCodeGlobal(raw: string, binPath: string): string {
+  const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
+  const servers = (config["mcpServers"] ?? {}) as Record<string, unknown>;
+
+  if (servers[SERVER_NAME]) return raw; // dedup
+
+  servers[SERVER_NAME] = { command: binPath };
+  config["mcpServers"] = servers;
+  return JSON.stringify(config, null, 2) + "\n";
+}
+
+/** Injects into {"mcpServers": {...}} format (Claude Code project scope, Cursor). */
 function injectMcpServers(raw: string, binPath: string): string {
   const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
   const servers = (config["mcpServers"] ?? {}) as Record<string, unknown>;
 
   if (servers[SERVER_NAME]) return raw; // dedup
 
-  servers[SERVER_NAME] = { command: binPath, args: [] };
+  servers[SERVER_NAME] = { command: binPath };
   config["mcpServers"] = servers;
   return JSON.stringify(config, null, 2) + "\n";
 }

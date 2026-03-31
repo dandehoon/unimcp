@@ -3,30 +3,47 @@ import { startManagedServer } from "./server.js";
 import { ensureDaemon } from "./daemon.js";
 import { runBridge } from "./bridge.js";
 import { runSetup } from "./setup.js";
+import { runCollect } from "./collect.js";
+import { DEFAULT_MCP_FILE } from "./config.js";
 
 const PORT = Number(process.env.PORT ?? 4848);
 const HOST = process.env.HOST ?? "127.0.0.1";
-const CONFIG_PATH = process.env.CONFIG ?? "mcp.json";
 
 const args = process.argv.slice(2);
+const command = args[0];
+const restArgs = args.slice(1);
+
 const useHttp = args.includes("--http");
 const isDaemon = args.includes("--daemon");
-const isSetup = args[0] === "setup";
+
+/** Resolves the active mcp file path: --mcp-file flag > CONFIG env > default. */
+function resolveMcpFile(): string {
+  const flagIdx = args.indexOf("--mcp-file");
+  if (flagIdx !== -1 && args[flagIdx + 1]) return args[flagIdx + 1];
+  const inline = args.find((a) => a.startsWith("--mcp-file="));
+  if (inline) return inline.slice("--mcp-file=".length);
+  return process.env.CONFIG ?? DEFAULT_MCP_FILE;
+}
+
+const CONFIG_PATH = resolveMcpFile();
 
 async function main() {
-  if (isSetup) {
-    await runSetup(args.slice(1));
+  if (command === "setup") {
+    await runSetup(restArgs);
+    return;
+  }
+
+  if (command === "collect") {
+    runCollect(restArgs);
     return;
   }
 
   if (useHttp || isDaemon) {
-    // Run as the managed background HTTP server (file watch + auto-stop).
     await startManagedServer({ port: PORT, host: HOST, configPath: CONFIG_PATH });
     return;
   }
 
   // Default (stdio) mode: ensure daemon is running, then bridge stdio ↔ daemon HTTP.
-  // ensureDaemon returns the actual port (may differ from PORT if fallback was used).
   const actualPort = await ensureDaemon({ port: PORT, host: HOST });
   await runBridge({ port: actualPort, host: HOST });
 }

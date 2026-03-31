@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "register": "bun run src/index.ts setup",
     "register-node": "node bin/unimcp.js setup",
+    "collect": "bun run src/index.ts collect",
     "dev": "bun run src/index.ts",
     "http": "bun run src/index.ts --http",
     "daemon": "bun run src/index.ts --daemon",

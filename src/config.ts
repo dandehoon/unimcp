@@ -1,4 +1,8 @@
 import { readFileSync } from "fs";
+import path from "path";
+import os from "os";
+
+export const DEFAULT_MCP_FILE = path.join(os.homedir(), ".config", "unimcp", "mcp.json");
 
 export type ToolFilter = {
   include?: string[]; // glob patterns — defaults to ["*"] (all)
