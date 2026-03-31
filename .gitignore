@@ -7,6 +7,9 @@ node_modules/
 # build output
 dist/
 
+# bun compile temp files (created in cwd during bun build --compile)
+*.bun-build
+
 # runtime
 # pid file lives at ~/.config/unimcp/daemon.pid — not in cwd
 # kept here for backwards compatibility with any stale files

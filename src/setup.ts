@@ -44,7 +44,7 @@ const TARGETS: TargetDef[] = [
     id: "cursor",
     label: "Cursor",
     configPath: path.join(HOME, ".cursor", "mcp.json"),
-    isInstalled: () => existsSync(path.join("/Applications", "Cursor.app")) || existsSync(path.join(HOME, ".cursor")),
+    isInstalled: () => existsSync(path.join("/Applications", "Cursor.app")) || existsSync(path.join(HOME, "Applications", "Cursor.app")),
     inject: injectMcpServers,
   },
   {
@@ -68,11 +68,6 @@ const TARGETS: TargetDef[] = [
 export async function runSetup(argv: string[]): Promise<void> {
   const binPath = resolveUnimcpBin();
   const targetFilter = parseTargetFlag(argv);
-  const useGlobal = argv.includes("--global"); // alias flag — all targets are global
-
-  if (useGlobal) {
-    console.error("[setup] --global flag acknowledged (all targets are global by default)");
-  }
 
   const targets = TARGETS.filter((t) => targetFilter === null || targetFilter.includes(t.id));
   const applicable = targets.filter((t) => t.isInstalled());

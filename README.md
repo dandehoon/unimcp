@@ -1,33 +1,82 @@
 # unimcp
 
+[![CI](https://github.com/dandehoon/unimcp/actions/workflows/ci.yml/badge.svg)](https://github.com/dandehoon/unimcp/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@dandehoon/unimcp)](https://www.npmjs.com/package/@dandehoon/unimcp)
+
 A local MCP aggregator that connects to multiple MCP servers and exposes all their tools through a **single unified endpoint**.
 
 Tool names are prefixed as `serverName__toolName` (e.g. `context7__resolve-library-id`).
 
-## Quick start
+## Install
+
+### Via npm (requires [bun](https://bun.sh))
 
 ```bash
-# Install binary (requires bun)
+npm install -g @dandehoon/unimcp
+# or
+pnpm add -g @dandehoon/unimcp
+```
+
+Then register yourself with your editors:
+
+```bash
+unimcp setup
+```
+
+### Pre-built binary
+
+Download from [GitHub Releases](https://github.com/dandehoon/unimcp/releases) — no runtime required:
+
+```bash
+# macOS (Apple Silicon)
+curl -L https://github.com/dandehoon/unimcp/releases/latest/download/unimcp-macos-arm64 -o /usr/local/bin/unimcp
+chmod +x /usr/local/bin/unimcp
+codesign --force --deep --sign - /usr/local/bin/unimcp
+
+# macOS (Intel)
+curl -L https://github.com/dandehoon/unimcp/releases/latest/download/unimcp-macos-x64 -o /usr/local/bin/unimcp
+chmod +x /usr/local/bin/unimcp
+codesign --force --deep --sign - /usr/local/bin/unimcp
+
+# Linux x64
+curl -L https://github.com/dandehoon/unimcp/releases/latest/download/unimcp-linux-x64 -o /usr/local/bin/unimcp
+chmod +x /usr/local/bin/unimcp
+```
+
+### Build from source (requires [bun](https://bun.sh) + [pnpm](https://pnpm.io))
+
+```bash
 pnpm install && pnpm install-bin    # → /usr/local/bin/unimcp
 ```
 
-Configure your MCP client (`mcp.json` is gitignored — create your own):
+## Setup
 
-```json
-{
-  "unimcp": {
-    "type": "stdio",
-    "command": "unimcp",
-    "env": { "CONFIG": "/path/to/your/mcp.json" }
-  }
-}
+After installing, register unimcp in all detected editors:
+
+```bash
+unimcp setup
+# or: pnpm register
 ```
 
-On first run, `unimcp` auto-starts a shared background daemon and bridges stdio through it. Upstream processes start **once** and are reused across all client connections.
+Supported targets — auto-detected from installed applications:
+
+| Editor | Config file |
+|--------|-------------|
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Cursor | `~/.cursor/mcp.json` |
+| VS Code / GitHub Copilot | `~/Library/Application Support/Code/User/mcp.json` |
+| OpenCode | `~/.config/opencode/opencode.json` |
+
+Options:
+```bash
+unimcp setup --target claude,copilot   # register only specific targets
+```
+
+> Re-running `setup` is safe — already-registered targets are skipped (dedup).
 
 ## Configuration
 
-Create an `mcp.json` (VS Code Copilot format):
+Create an `mcp.json` anywhere (default: `mcp.json` in cwd, or set `CONFIG=/path/to/mcp.json`):
 
 ```jsonc
 {
@@ -64,21 +113,11 @@ Secrets go in `.env` next to `mcp.json` (or set them in your shell environment):
 MY_TOKEN=your-token-here
 ```
 
-## Build & install
-
-Requires [Bun](https://bun.sh). Compiles a self-contained binary — no runtime needed on target machines.
-
-```bash
-pnpm install
-pnpm build           # → dist/unimcp (59 MB, self-contained)
-pnpm install-bin     # builds + copies to /usr/local/bin/unimcp
-```
-
 ## Modes
 
 ### stdio — default
 
-Auto-starts a shared daemon, then bridges stdin/stdout through it.
+Auto-starts a shared daemon, then bridges stdin/stdout through it. The daemon is reused across all client connections — upstream processes start only once.
 
 ```bash
 unimcp               # or: pnpm dev
@@ -87,9 +126,10 @@ unimcp               # or: pnpm dev
 ### HTTP daemon — `--http`
 
 Runs the HTTP server directly. Features:
-- **Session tracking** — auto-stops 30 s after the last client disconnects  
-- **Hot reload** — watches `mcp.json` and reconnects upstreams on change  
+- **Session tracking** — auto-stops 30 s after the last client disconnects
+- **Hot reload** — watches `mcp.json` and reconnects upstreams on change
 - **Health check** — `GET /health` returns `200 ok`
+- **Auto port fallback** — tries port 4848; falls back to an OS-assigned port if in use
 
 ```bash
 unimcp --http        # or: pnpm http
@@ -111,12 +151,14 @@ Client config:
 ```bash
 pnpm dev             # run with bun (no compile step)
 pnpm typecheck       # tsc --noEmit
+pnpm build           # compile → dist/unimcp
+pnpm install-bin     # build + install to /usr/local/bin/unimcp
 ```
 
 ## Environment variables
 
 | Variable | Default     | Description                  |
 | -------- | ----------- | ---------------------------- |
-| `PORT`   | `4848`      | HTTP server port              |
-| `HOST`   | `127.0.0.1` | HTTP server bind address      |
-| `CONFIG` | `mcp.json`  | Path to server config file    |
+| `PORT`   | `4848`      | HTTP server preferred port   |
+| `HOST`   | `127.0.0.1` | HTTP server bind address     |
+| `CONFIG` | `mcp.json`  | Path to server config file   |
