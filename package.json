@@ -11,7 +11,7 @@
     "http": "bun run src/index.ts --http",
     "daemon": "bun run src/index.ts --daemon",
     "build": "bun build --compile --minify src/index.ts --outfile dist/unimcp",
-    "install-bin": "pnpm build && sudo cp dist/unimcp /usr/local/bin/unimcp"
+    "install-bin": "pnpm build && cp dist/unimcp /usr/local/bin/unimcp && codesign --force --deep --sign - /usr/local/bin/unimcp"
   },
   "keywords": [],
   "author": "",
