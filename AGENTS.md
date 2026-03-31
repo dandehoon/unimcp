@@ -219,7 +219,11 @@ await client.connect(new StdioClientTransport({ command, args, env }));
 
 ## Setup / registration
 
-`unimcp setup` (or `pnpm register`) registers the binary in all detected editor configs:
+`unimcp setup` (or `pnpm register`) registers the binary in editor configs:
+
+**Local mode (default):** writes to `.cursor/mcp.json` and `.vscode/mcp.json` in the current directory. Always creates/updates.
+
+**Global mode (`--global`):** writes to user-level config files. Only updates if the config file already exists. Use `--target` to force-create.
 
 | Target            | Config file                                                       | Key          | Type value         |
 | ----------------- | ----------------------------------------------------------------- | ------------ | ------------------ |
@@ -229,9 +233,8 @@ await client.connect(new StdioClientTransport({ command, args, env }));
 | OpenCode          | `~/.config/opencode/opencode.json`                                | `mcp`        | `"local"`          |
 
 - **Dedup**: skips a target if `"unimcp"` key already exists
-- **`--global`**: alias flag (all targets are global by nature)
-- **`--target=claude,copilot`**: restrict to specific targets
-- Cursor is registered only if `/Applications/Cursor.app` or `~/Applications/Cursor.app` is detected
+- **`--global --target=claude,copilot`**: force-write global even if file doesn't exist
+- Claude Desktop and OpenCode have no project-level equivalent (global only)
 
 ---
 
@@ -249,9 +252,7 @@ await client.connect(new StdioClientTransport({ command, args, env }));
 git tag vX.Y.Z && git push --tags
 # → triggers release.yml:
 #   1. typecheck
-#   2. build 4 platform binaries (macos-arm64, macos-x64, linux-x64, linux-arm64)
-#   3. create GitHub Release with all binaries attached
-#   4. pnpm publish --no-git-checks → npmjs (uses NPM_TOKEN secret)
+#   2. pnpm publish --no-git-checks → npmjs (uses NPM_TOKEN secret)
 ```
 
 Required GitHub repository secrets:

@@ -17,60 +17,46 @@ npm install -g @dandehoon/unimcp
 pnpm add -g @dandehoon/unimcp
 ```
 
-Then register yourself with your editors:
+### Build from source
+
+Requires [bun](https://bun.sh) and [pnpm](https://pnpm.io):
 
 ```bash
-unimcp setup
-```
-
-### Pre-built binary
-
-Download from [GitHub Releases](https://github.com/dandehoon/unimcp/releases) — no runtime required:
-
-```bash
-# macOS (Apple Silicon)
-curl -L https://github.com/dandehoon/unimcp/releases/latest/download/unimcp-macos-arm64 -o /usr/local/bin/unimcp
-chmod +x /usr/local/bin/unimcp
-codesign --force --deep --sign - /usr/local/bin/unimcp
-
-# macOS (Intel)
-curl -L https://github.com/dandehoon/unimcp/releases/latest/download/unimcp-macos-x64 -o /usr/local/bin/unimcp
-chmod +x /usr/local/bin/unimcp
-codesign --force --deep --sign - /usr/local/bin/unimcp
-
-# Linux x64
-curl -L https://github.com/dandehoon/unimcp/releases/latest/download/unimcp-linux-x64 -o /usr/local/bin/unimcp
-chmod +x /usr/local/bin/unimcp
-```
-
-### Build from source (requires [bun](https://bun.sh) + [pnpm](https://pnpm.io))
-
-```bash
+git clone https://github.com/dandehoon/unimcp
+cd unimcp
 pnpm install && pnpm install-bin    # → /usr/local/bin/unimcp
 ```
 
 ## Setup
 
-After installing, register unimcp in all detected editors:
+After installing, register unimcp in your editors.
+
+### Local (project-level) — default
+
+Writes to `.cursor/mcp.json` and `.vscode/mcp.json` in the current directory:
 
 ```bash
 unimcp setup
 # or: pnpm register
 ```
 
-Supported targets — auto-detected from installed applications:
+### Global (user-level)
 
-| Editor | Config file |
-|--------|-------------|
-| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| Cursor | `~/.cursor/mcp.json` |
-| VS Code / GitHub Copilot | `~/Library/Application Support/Code/User/mcp.json` |
-| OpenCode | `~/.config/opencode/opencode.json` |
+Updates existing global editor configs. Only updates configs for editors that already have a config file; use `--target` to force-create:
 
-Options:
 ```bash
-unimcp setup --target claude,copilot   # register only specific targets
+unimcp setup --global
+unimcp setup --global --target claude,copilot   # force-write even if file doesn't exist
 ```
+
+Supported targets and their global config paths:
+
+| Target | Config file |
+|--------|-------------|
+| `claude` | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| `cursor` | `~/.cursor/mcp.json` |
+| `copilot` | `~/Library/Application Support/Code/User/mcp.json` |
+| `opencode` | `~/.config/opencode/opencode.json` |
 
 > Re-running `setup` is safe — already-registered targets are skipped (dedup).
 
@@ -133,17 +119,6 @@ Runs the HTTP server directly. Features:
 
 ```bash
 unimcp --http        # or: pnpm http
-```
-
-Client config:
-
-```json
-{
-  "unimcp": {
-    "type": "http",
-    "url": "http://127.0.0.1:4848/mcp"
-  }
-}
 ```
 
 ## Development
