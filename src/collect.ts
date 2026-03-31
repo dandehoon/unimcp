@@ -13,6 +13,7 @@ import path from "path";
 import os from "os";
 import type { ServerConfig } from "./config.js";
 import { DEFAULT_MCP_FILE } from "./config.js";
+import { stripJsonComments } from "./utils.js";
 
 const HOME = os.homedir();
 const CWD = process.cwd();
@@ -174,38 +175,4 @@ function readOpenCode(): Record<string, ServerConfig> {
     console.error(`[collect] warning: could not parse opencode.json`);
     return {};
   }
-}
-
-/**
- * Strips // line comments and block comments from JSONC,
- * respecting quoted string boundaries.
- */
-function stripJsonComments(raw: string): string {
-  let result = "";
-  let i = 0;
-  while (i < raw.length) {
-    if (raw[i] === '"') {
-      result += raw[i++];
-      while (i < raw.length) {
-        const ch = raw[i];
-        result += ch;
-        i++;
-        if (ch === "\\" && i < raw.length) { result += raw[i++]; continue; }
-        if (ch === '"') break;
-      }
-      continue;
-    }
-    if (raw[i] === "/" && raw[i + 1] === "/") {
-      while (i < raw.length && raw[i] !== "\n") i++;
-      continue;
-    }
-    if (raw[i] === "/" && raw[i + 1] === "*") {
-      i += 2;
-      while (i < raw.length && !(raw[i] === "*" && raw[i + 1] === "/")) i++;
-      i += 2;
-      continue;
-    }
-    result += raw[i++];
-  }
-  return result;
 }

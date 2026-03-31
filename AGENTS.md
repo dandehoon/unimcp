@@ -40,18 +40,20 @@ pnpm daemon         # alias for --http (explicit daemon invocation)
 pnpm collect        # print merged config from all editors to stdout
 pnpm register       # register unimcp in Claude Code, Copilot, OpenCode, Cursor
 
-# Type checking (no tests exist yet)
+# Type checking and tests
 pnpm typecheck      # tsc --noEmit — must pass before any commit
+pnpm test           # bun test tests/ — run unit tests
 
 # Build & install compiled binary
 pnpm build          # bun build --compile --minify → dist/unimcp
 pnpm install-bin    # build + cp dist/unimcp /usr/local/bin/unimcp
 ```
 
-There are no automated tests. The canonical verification step is:
+There are no automated integration tests. The canonical verification steps are:
 
 1. `pnpm typecheck` — zero errors required
-2. Manual smoke test: `printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | timeout 20 pnpm dev 2>/dev/null`
+2. `pnpm test` — all tests must pass
+3. Manual smoke test: `printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | timeout 20 pnpm dev 2>/dev/null`
 
 ---
 

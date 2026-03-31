@@ -16,6 +16,7 @@
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "fs";
 import path from "path";
 import os from "os";
+import { stripJsonComments } from "./utils.js";
 
 const HOME = os.homedir();
 const CWD = process.cwd();
@@ -169,7 +170,7 @@ function parseTargetFlag(argv: string[]): TargetId[] | null {
  * Injects into ~/.claude.json at top-level mcpServers (Claude Code user scope).
  * Preserves all other keys (projects, settings, etc.).
  */
-function injectClaudeCodeGlobal(raw: string, binPath: string): string {
+export function injectClaudeCodeGlobal(raw: string, binPath: string): string {
   const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
   const servers = (config["mcpServers"] ?? {}) as Record<string, unknown>;
 
@@ -181,7 +182,7 @@ function injectClaudeCodeGlobal(raw: string, binPath: string): string {
 }
 
 /** Injects into {"mcpServers": {...}} format (Claude Code project scope, Cursor). */
-function injectMcpServers(raw: string, binPath: string): string {
+export function injectMcpServers(raw: string, binPath: string): string {
   const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
   const servers = (config["mcpServers"] ?? {}) as Record<string, unknown>;
 
@@ -193,7 +194,7 @@ function injectMcpServers(raw: string, binPath: string): string {
 }
 
 /** Injects into {"servers": {...}} format (VS Code / GitHub Copilot). */
-function injectVsCodeServers(raw: string, binPath: string): string {
+export function injectVsCodeServers(raw: string, binPath: string): string {
   const stripped = stripJsonComments(raw);
   const config = stripped.trim() ? (JSON.parse(stripped) as Record<string, unknown>) : {};
   const servers = (config["servers"] ?? {}) as Record<string, unknown>;
@@ -207,7 +208,7 @@ function injectVsCodeServers(raw: string, binPath: string): string {
 }
 
 /** Injects into {"mcp": {...}} format (OpenCode). */
-function injectOpenCode(raw: string, binPath: string): string {
+export function injectOpenCode(raw: string, binPath: string): string {
   const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
   const mcp = (config["mcp"] ?? {}) as Record<string, unknown>;
 
@@ -216,38 +217,4 @@ function injectOpenCode(raw: string, binPath: string): string {
   mcp[SERVER_NAME] = { type: "local", command: [binPath], enabled: true };
   config["mcp"] = mcp;
   return JSON.stringify(config, null, 2) + "\n";
-}
-
-/**
- * Strips // line comments and block comments from JSONC,
- * respecting quoted string boundaries.
- */
-function stripJsonComments(raw: string): string {
-  let result = "";
-  let i = 0;
-  while (i < raw.length) {
-    if (raw[i] === '"') {
-      result += raw[i++];
-      while (i < raw.length) {
-        const ch = raw[i];
-        result += ch;
-        i++;
-        if (ch === "\\" && i < raw.length) { result += raw[i++]; continue; }
-        if (ch === '"') break;
-      }
-      continue;
-    }
-    if (raw[i] === "/" && raw[i + 1] === "/") {
-      while (i < raw.length && raw[i] !== "\n") i++;
-      continue;
-    }
-    if (raw[i] === "/" && raw[i + 1] === "*") {
-      i += 2;
-      while (i < raw.length && !(raw[i] === "*" && raw[i + 1] === "/")) i++;
-      i += 2;
-      continue;
-    }
-    result += raw[i++];
-  }
-  return result;
 }

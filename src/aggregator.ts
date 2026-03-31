@@ -16,7 +16,7 @@ type UpstreamEntry = {
 
 export type AggregatedTool = Tool & { upstreamName: string; originalName: string };
 
-function matchesFilter(toolName: string, filter?: ToolFilter): boolean {
+export function matchesFilter(toolName: string, filter?: ToolFilter): boolean {
   const include = filter?.include ?? ["*"];
   const exclude = filter?.exclude ?? [];
   const included = include.some((pat) => minimatch(toolName, pat));
