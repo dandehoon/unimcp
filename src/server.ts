@@ -6,7 +6,7 @@
  * - Watches mcp.json with chokidar; hot-reloads aggregator on change.
  */
 import http from "http";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, unlinkSync } from "fs";
 import path from "path";
 import os from "os";
 import { watch } from "chokidar";
@@ -22,6 +22,7 @@ import { loadConfig, type Config, type ToolFilter } from "./config.js";
 import { Aggregator } from "./aggregator.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
+const READY_TIMEOUT_MS = 60_000;
 export const CONFIG_DIR = path.join(os.homedir(), ".config", "unimcp");
 export const PID_FILE = path.join(CONFIG_DIR, "daemon.pid");
 
@@ -54,14 +55,18 @@ function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Serv
 }
 
 export async function startManagedServer(opts: ManagedServerOptions): Promise<void> {
-  let { aggregator, config } = await buildAggregator(opts.configPath);
+  let aggregator: Aggregator | null = null;
+  let config: Config | null = null;
   let activeSessions = 0;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let resolveReady: () => void = () => {};
+  const readyPromise = new Promise<void>((r) => { resolveReady = r; });
 
   function scheduleShutdown() {
     if (idleTimer) return;
     idleTimer = setTimeout(() => {
       console.error("[server] no active sessions for 30 s — shutting down");
+      try { unlinkSync(PID_FILE); } catch { /* already gone */ }
       process.exit(0);
     }, IDLE_TIMEOUT_MS);
   }
@@ -87,25 +92,40 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     activeSessions++;
     cancelShutdown();
 
-    const clientName = req.headers["x-client-name"] as string | undefined;
-    const clientFilter = clientName ? config.clients?.[clientName]?.tools : undefined;
-    const mcpServer = buildMcpServer(aggregator, clientFilter);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-
+    let transport: StreamableHTTPServerTransport | null = null;
     res.on("close", () => {
       activeSessions--;
       if (activeSessions === 0) scheduleShutdown();
-      transport.close();
+      try { transport?.close(); } catch { /* not yet connected */ }
     });
+
+    const ready = await Promise.race([
+      readyPromise.then(() => true),
+      new Promise<false>((r) => setTimeout(() => r(false), READY_TIMEOUT_MS)),
+    ]);
+
+    if (!ready) {
+      res.writeHead(503).end("Service Unavailable — upstream connections still initializing");
+      return;
+    }
+
+    if (!aggregator || !config) {
+      res.writeHead(503).end("Service Unavailable — upstream connections failed");
+      return;
+    }
+
+    const clientName = req.headers["x-client-name"] as string | undefined;
+    const clientFilter = clientName ? config.clients?.[clientName]?.tools : undefined;
+    const mcpServer = buildMcpServer(aggregator, clientFilter);
+    transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
     await mcpServer.connect(transport);
     await transport.handleRequest(req, res);
   });
 
-  // Try preferred port; fall back to OS-assigned if in use.
+  // Start listening FIRST so /health is reachable before upstream connections.
   const boundPort = await listenWithFallback(httpServer, opts.port, opts.host);
 
-  // Announce actual port so bridge and daemon can discover it.
   mkdirSync(CONFIG_DIR, { recursive: true });
   writeFileSync(PID_FILE, `${process.pid}:${boundPort}`, "utf-8");
   console.error(`[server] listening on http://${opts.host}:${boundPort}/mcp`);
@@ -113,15 +133,29 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   // Start idle timer; cancelled when first client connects.
   scheduleShutdown();
 
+  // Connect to upstreams AFTER server is listening.
+  let initializing = true;
+  try {
+    const initial = await buildAggregator(opts.configPath);
+    aggregator = initial.aggregator;
+    config = initial.config;
+  } catch (err) {
+    console.error("[server] initial aggregator build failed:", err);
+    console.error("[server] running with 0 tools — fix config and it will hot-reload");
+  } finally {
+    initializing = false;
+    resolveReady();
+  }
+
   // Hot-reload on config change
   let isReloading = false;
   watch(opts.configPath, { ignoreInitial: true }).on("change", async () => {
-    if (isReloading) return;
+    if (isReloading || initializing) return;
     isReloading = true;
     console.error("[server] config changed — reloading");
     try {
       const next = await buildAggregator(opts.configPath);
-      await aggregator.disconnect();
+      await aggregator?.disconnect();
       aggregator = next.aggregator;
       config = next.config;
       console.error(`[server] reloaded — ${aggregator.listTools().length} tools`);
@@ -137,7 +171,8 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
 
   async function shutdown(signal: string) {
     console.error(`[server] ${signal} — shutting down`);
-    await aggregator.disconnect();
+    try { unlinkSync(PID_FILE); } catch { /* already gone */ }
+    await aggregator?.disconnect();
     httpServer.close();
     process.exit(0);
   }

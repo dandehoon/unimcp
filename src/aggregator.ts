@@ -9,6 +9,7 @@ import { type Config, type ServerConfig, type ToolFilter, isHttpServer } from ".
 const SEP = "__";
 const CLIENT_NAME = "unimcp";
 const CLIENT_VERSION = "1.0.0";
+const CONNECT_TIMEOUT_MS = 30_000;
 
 type UpstreamEntry = {
   name: string;
@@ -37,16 +38,16 @@ export class Aggregator {
 
   private async connectOne(name: string, srv: ServerConfig): Promise<void> {
     const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
-
     const transport = buildTransport(srv);
 
     try {
-      await client.connect(transport);
-      const { tools } = await client.listTools();
+      await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] connect timed out`);
+      const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `[${name}] listTools timed out`);
       this.upstreams.push({ name, client, tools, filter: srv.tools });
       console.error(`[${name}] connected (${tools.length} tools)`);
     } catch (err) {
       console.error(`[${name}] failed to connect:`, err);
+      try { await client.close(); } catch { /* already dead */ }
     }
   }
 
@@ -77,7 +78,10 @@ export class Aggregator {
   }
 
   async disconnect(): Promise<void> {
-    await Promise.all(this.upstreams.map(({ client }) => client.close()));
+    const results = await Promise.allSettled(this.upstreams.map(({ client }) => client.close()));
+    for (const r of results) {
+      if (r.status === "rejected") console.error("[aggregator] disconnect error:", r.reason);
+    }
   }
 }
 
@@ -93,5 +97,14 @@ function buildTransport(srv: ServerConfig): Transport {
     command: srv.command,
     args: srv.args ?? [],
     env: { ...process.env, ...srv.env } as Record<string, string>,
+  });
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise
+      .then((val) => { clearTimeout(timer); resolve(val); })
+      .catch((err) => { clearTimeout(timer); reject(err); });
   });
 }

@@ -17,6 +17,7 @@ const POLL_INTERVAL_MS = 300;
 export type DaemonOptions = {
   port: number; // preferred port; actual port may differ (auto-assigned)
   host: string;
+  configPath: string;
 };
 
 type DaemonInfo = {
@@ -64,8 +65,8 @@ async function startDaemon(opts: DaemonOptions): Promise<number> {
   const isCompiled = execPath === scriptArg || scriptArg.includes("$bunfs");
 
   const [cmd, cmdArgs] = isCompiled
-    ? [execPath, ["--http"]]
-    : [execPath, [scriptArg, "--http"]];
+    ? [execPath, ["--http", "--mcp-file", opts.configPath]]
+    : [execPath, [scriptArg, "--http", "--mcp-file", opts.configPath]];
 
   const child = spawn(cmd, cmdArgs, {
     detached: true,

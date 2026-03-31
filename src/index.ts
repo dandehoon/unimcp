@@ -1,4 +1,5 @@
 import "dotenv/config";
+import path from "path";
 import { startManagedServer } from "./server.js";
 import { ensureDaemon } from "./daemon.js";
 import { runBridge } from "./bridge.js";
@@ -19,9 +20,9 @@ const isDaemon = args.includes("--daemon");
 /** Resolves the active mcp file path: --mcp-file flag > CONFIG env > default. */
 function resolveMcpFile(): string {
   const flagIdx = args.indexOf("--mcp-file");
-  if (flagIdx !== -1 && args[flagIdx + 1]) return args[flagIdx + 1];
+  if (flagIdx !== -1 && args[flagIdx + 1]) return path.resolve(args[flagIdx + 1]);
   const inline = args.find((a) => a.startsWith("--mcp-file="));
-  if (inline) return inline.slice("--mcp-file=".length);
+  if (inline) return path.resolve(inline.slice("--mcp-file=".length));
   return process.env.UNIMCP_CONFIG ?? process.env.CONFIG ?? DEFAULT_MCP_FILE;
 }
 
@@ -44,7 +45,7 @@ async function main() {
   }
 
   // Default (stdio) mode: ensure daemon is running, then bridge stdio ↔ daemon HTTP.
-  const actualPort = await ensureDaemon({ port: PORT, host: HOST });
+  const actualPort = await ensureDaemon({ port: PORT, host: HOST, configPath: CONFIG_PATH });
   await runBridge({ port: actualPort, host: HOST });
 }
 
