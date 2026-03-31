@@ -33,7 +33,7 @@ After installing, register unimcp in your editors.
 
 ### Local (project-level) — default
 
-Writes to `.cursor/mcp.json` and `.vscode/mcp.json` in the current directory:
+Writes to `.mcp.json` (claude-code), `.cursor/mcp.json` (cursor), and `.vscode/mcp.json` (copilot) in the current directory:
 
 ```bash
 unimcp setup
@@ -46,7 +46,7 @@ Updates existing global editor configs. Only updates configs for editors that al
 
 ```bash
 unimcp setup --global
-unimcp setup --global --target claude,copilot   # force-write even if file doesn't exist
+unimcp setup --global --target claude-code,copilot   # force-write even if file doesn't exist
 ```
 
 Supported targets:
@@ -139,6 +139,8 @@ unimcp --http        # or: pnpm http
 ```bash
 pnpm dev             # run with bun (no compile step)
 pnpm typecheck       # tsc --noEmit
+pnpm test            # bun test tests/
+pnpm collect         # print merged MCP config from all editors to stdout
 pnpm build           # compile → dist/unimcp
 pnpm install-bin     # build + install to /usr/local/bin/unimcp
 ```

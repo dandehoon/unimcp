@@ -16,11 +16,14 @@ src/
   bridge.ts      # Stdio ↔ HTTP bridge (used in default stdio mode)
   setup.ts       # Editor registration (Claude Code, Cursor, VS Code/Copilot, OpenCode)
   collect.ts     # Collect command: reads MCP configs from all editors, merges, outputs
+  utils.ts       # Shared utilities (stripJsonComments)
 bin/
   unimcp.js      # npm launcher: finds bun and runs src/index.ts
+tests/
+  *.test.ts      # Unit tests (bun test)
 .github/
   workflows/
-    ci.yml       # Type check on push/PR to main
+    ci.yml       # Type check + unit tests on push/PR to main
     release.yml  # Build multi-platform binaries + publish to npm on vX.Y.Z tag
 mcp.json         # Server config (gitignored — user-created, not committed)
 .env             # Secrets (gitignored)
@@ -213,12 +216,14 @@ await client.connect(new StdioClientTransport({ command, args, env }));
 - The daemon pid file lives at **`~/.config/unimcp/daemon.pid`** (not in cwd)
   - Format: `"<pid>:<port>"` e.g. `"94663:4848"` or `"94844:52341"` (after port fallback)
   - `CONFIG_DIR` and `PID_FILE` constants are exported from `server.ts`, imported by `daemon.ts`
+
 ### Key constants
 ```
 DEFAULT_MCP_FILE = ~/.config/unimcp/mcp.json     (config.ts)
 CONFIG_DIR       = ~/.config/unimcp              (server.ts)
 PID_FILE         = ~/.config/unimcp/daemon.pid   (server.ts)
 ```
+
 - The daemon is a **shared background process** — `pnpm dev` bridges to it rather than spawning upstreams per client
 - **Auto port fallback**: server tries `preferredPort` (default 4848); if `EADDRINUSE`, falls back to port 0 (OS-assigned); actual port written to pid file so bridge always discovers the right port
 - `StreamableHTTPServerTransport` must be created **per request** (stateless: `sessionIdGenerator: undefined`)
@@ -297,4 +302,5 @@ Required GitHub repository secrets:
 
 ```bash
 pnpm typecheck   # must be clean (zero errors)
+pnpm test        # all tests must pass
 ```
