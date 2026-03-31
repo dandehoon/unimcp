@@ -21,6 +21,7 @@ import { stripJsonComments } from "./utils.js";
 const HOME = os.homedir();
 const CWD = process.cwd();
 const SERVER_NAME = "unimcp";
+const SYSTEM_BIN_PATH = "/usr/local/bin/unimcp";
 
 // --- target definitions ---
 
@@ -43,7 +44,7 @@ const TARGETS: TargetDef[] = [
     globalConfigPath: path.join(HOME, ".claude.json"),
     // project scope: .mcp.json in cwd (committed to git, shared with team)
     localConfigPath: path.join(CWD, ".mcp.json"),
-    injectGlobal: injectClaudeCodeGlobal,
+    injectGlobal: injectMcpServers,
     injectLocal: injectMcpServers,
   },
   {
@@ -151,8 +152,7 @@ function registerTarget(
 }
 
 function resolveUnimcpBin(): string {
-  const systemBin = "/usr/local/bin/unimcp";
-  if (existsSync(systemBin)) return systemBin;
+  if (existsSync(SYSTEM_BIN_PATH)) return SYSTEM_BIN_PATH;
   return process.execPath;
 }
 
@@ -166,22 +166,7 @@ function parseTargetFlag(argv: string[]): TargetId[] | null {
   return raw.split(",").map((s) => s.trim()) as TargetId[];
 }
 
-/**
- * Injects into ~/.claude.json at top-level mcpServers (Claude Code user scope).
- * Preserves all other keys (projects, settings, etc.).
- */
-export function injectClaudeCodeGlobal(raw: string, binPath: string): string {
-  const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
-  const servers = (config["mcpServers"] ?? {}) as Record<string, unknown>;
-
-  if (servers[SERVER_NAME]) return raw; // dedup
-
-  servers[SERVER_NAME] = { command: binPath };
-  config["mcpServers"] = servers;
-  return JSON.stringify(config, null, 2) + "\n";
-}
-
-/** Injects into {"mcpServers": {...}} format (Claude Code project scope, Cursor). */
+/** Injects into {"mcpServers": {...}} format (Claude Code project/global scope, Cursor). */
 export function injectMcpServers(raw: string, binPath: string): string {
   const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
   const servers = (config["mcpServers"] ?? {}) as Record<string, unknown>;

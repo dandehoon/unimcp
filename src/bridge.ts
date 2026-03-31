@@ -27,8 +27,8 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   const clientTransport = new StreamableHTTPClientTransport(daemonUrl);
   await client.connect(clientTransport);
 
-  const { tools } = await client.listTools();
-  console.error(`[bridge] connected to daemon — ${tools.length} tools available`);
+  const initialTools = await client.listTools();
+  console.error(`[bridge] connected to daemon — ${initialTools.tools.length} tools available`);
 
   const server = new Server(
     { name: "unimcp", version: "1.0.0" },
@@ -52,9 +52,11 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   const stdioTransport = new StdioServerTransport();
   await server.connect(stdioTransport);
 
-  process.on("SIGINT", async () => {
-    await client.close();
-    await server.close();
+  async function shutdown() {
+    await Promise.all([client.close(), server.close()]);
     process.exit(0);
-  });
+  }
+
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
 }

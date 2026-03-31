@@ -112,16 +112,7 @@ function readMcpServersFile(filePath: string): Record<string, ServerConfig> {
 
 /** Reads ~/.claude.json top-level mcpServers (Claude Code user scope). */
 function readClaudeCodeUser(): Record<string, ServerConfig> {
-  const filePath = path.join(HOME, ".claude.json");
-  if (!existsSync(filePath)) return {};
-  try {
-    const raw = readFileSync(filePath, "utf-8");
-    const config = JSON.parse(raw) as Record<string, unknown>;
-    return (config["mcpServers"] ?? {}) as Record<string, ServerConfig>;
-  } catch {
-    console.error(`[collect] warning: could not parse ${filePath}`);
-    return {};
-  }
+  return readMcpServersFile(path.join(HOME, ".claude.json"));
 }
 
 /** Reads .mcp.json in cwd (Claude Code project scope). */
@@ -141,11 +132,9 @@ function readVsCodeGlobal(): Record<string, ServerConfig> {
     const servers = (config["servers"] ?? {}) as Record<string, Record<string, unknown>>;
     const result: Record<string, ServerConfig> = {};
     for (const [name, srv] of Object.entries(servers)) {
-      if (srv["type"] === "http" || srv["url"]) {
-        result[name] = { type: "http", url: String(srv["url"] ?? ""), headers: srv["headers"] as Record<string, string> | undefined } as ServerConfig;
-      } else {
-        result[name] = { command: String(srv["command"] ?? ""), args: srv["args"] as string[] | undefined, env: srv["env"] as Record<string, string> | undefined } as ServerConfig;
-      }
+      result[name] = srv["type"] === "http" || srv["url"]
+        ? mapVsCodeHttpServer(srv)
+        : mapVsCodeStdioServer(srv);
     }
     return result;
   } catch {
@@ -175,4 +164,20 @@ function readOpenCode(): Record<string, ServerConfig> {
     console.error(`[collect] warning: could not parse opencode.json`);
     return {};
   }
+}
+
+function mapVsCodeHttpServer(srv: Record<string, unknown>): ServerConfig {
+  return {
+    type: "http",
+    url: String(srv["url"] ?? ""),
+    headers: srv["headers"] as Record<string, string> | undefined,
+  } as ServerConfig;
+}
+
+function mapVsCodeStdioServer(srv: Record<string, unknown>): ServerConfig {
+  return {
+    command: String(srv["command"] ?? ""),
+    args: srv["args"] as string[] | undefined,
+    env: srv["env"] as Record<string, string> | undefined,
+  } as ServerConfig;
 }

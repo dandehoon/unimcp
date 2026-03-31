@@ -1,7 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import {
   injectMcpServers,
-  injectClaudeCodeGlobal,
   injectVsCodeServers,
   injectOpenCode,
 } from "../src/setup.js";
@@ -21,28 +20,16 @@ describe("injectMcpServers", () => {
     expect(result.mcpServers.other).toEqual({ command: "other-bin" });
   });
 
-  test("dedup: returns unchanged string if already registered", () => {
-    const existing = JSON.stringify({ mcpServers: { unimcp: { command: BIN } } });
-    expect(injectMcpServers(existing, BIN)).toBe(existing);
-  });
-});
-
-describe("injectClaudeCodeGlobal", () => {
-  test("injects into empty ~/.claude.json", () => {
-    const result = JSON.parse(injectClaudeCodeGlobal("", BIN));
-    expect(result.mcpServers.unimcp).toEqual({ command: BIN });
-  });
-
-  test("preserves other top-level keys (projects, settings, etc.)", () => {
+  test("preserves unrelated top-level keys (e.g. ~/.claude.json projects field)", () => {
     const existing = JSON.stringify({ projects: { "/cwd": {} }, mcpServers: {} });
-    const result = JSON.parse(injectClaudeCodeGlobal(existing, BIN));
+    const result = JSON.parse(injectMcpServers(existing, BIN));
     expect(result.projects).toEqual({ "/cwd": {} });
     expect(result.mcpServers.unimcp).toEqual({ command: BIN });
   });
 
   test("dedup: returns unchanged string if already registered", () => {
     const existing = JSON.stringify({ mcpServers: { unimcp: { command: BIN } } });
-    expect(injectClaudeCodeGlobal(existing, BIN)).toBe(existing);
+    expect(injectMcpServers(existing, BIN)).toBe(existing);
   });
 });
 

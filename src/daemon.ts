@@ -11,6 +11,7 @@ import { PID_FILE } from "./server.js";
 
 const HEALTH_CHECK_TIMEOUT_MS = 3_000;
 const SPAWN_WAIT_MS = 15_000;
+const SPAWN_WAIT_S = SPAWN_WAIT_MS / 1_000;
 const POLL_INTERVAL_MS = 300;
 
 export type DaemonOptions = {
@@ -59,8 +60,8 @@ async function runningDaemon(host: string): Promise<DaemonInfo | null> {
 /** Starts the daemon in the background; waits until it writes its pid file and is healthy. */
 async function startDaemon(opts: DaemonOptions): Promise<number> {
   const execPath = process.execPath;
-  const scriptArg = process.argv[1];
-  const isCompiled = execPath === scriptArg || scriptArg?.includes("$bunfs");
+  const scriptArg = process.argv[1] ?? "";
+  const isCompiled = execPath === scriptArg || scriptArg.includes("$bunfs");
 
   const [cmd, cmdArgs] = isCompiled
     ? [execPath, ["--http"]]
@@ -95,7 +96,7 @@ async function waitForDaemon(host: string): Promise<number> {
     }
     await sleep(POLL_INTERVAL_MS);
   }
-  throw new Error(`Daemon did not become healthy within ${SPAWN_WAIT_MS / 1000} s`);
+  throw new Error(`Daemon did not become healthy within ${SPAWN_WAIT_S} s`);
 }
 
 function parsePidFile(): DaemonInfo | null {

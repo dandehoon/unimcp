@@ -1,11 +1,14 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { minimatch } from "minimatch";
-import { type Config, type ToolFilter, isHttpServer } from "./config.js";
+import { type Config, type ServerConfig, type ToolFilter, isHttpServer } from "./config.js";
 
 const SEP = "__";
+const CLIENT_NAME = "unimcp";
+const CLIENT_VERSION = "1.0.0";
 
 type UpstreamEntry = {
   name: string;
@@ -32,18 +35,10 @@ export class Aggregator {
     await Promise.all(entries.map(([name, srv]) => this.connectOne(name, srv)));
   }
 
-  private async connectOne(name: string, srv: Config["mcpServers"][string]): Promise<void> {
-    const client = new Client({ name: "unimcp", version: "1.0.0" });
+  private async connectOne(name: string, srv: ServerConfig): Promise<void> {
+    const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
 
-    const transport = isHttpServer(srv)
-      ? new StreamableHTTPClientTransport(new URL(srv.url), {
-          requestInit: { headers: srv.headers },
-        })
-      : new StdioClientTransport({
-          command: (srv as { command: string }).command,
-          args: (srv as { args?: string[] }).args ?? [],
-          env: { ...process.env, ...(srv as { env?: Record<string, string> }).env } as Record<string, string>,
-        });
+    const transport = buildTransport(srv);
 
     try {
       await client.connect(transport);
@@ -68,8 +63,9 @@ export class Aggregator {
     );
   }
 
-  async callTool(prefixedName: string, args: Record<string, unknown>) {
+  async callTool(prefixedName: string, args: Record<string, unknown>): Promise<ReturnType<Client["callTool"]>> {
     const sep = prefixedName.indexOf(SEP);
+    if (sep === -1) throw new Error(`Invalid tool name (missing separator): ${prefixedName}`);
     const upstreamName = prefixedName.slice(0, sep);
     const toolName = prefixedName.slice(sep + SEP.length);
 
@@ -82,4 +78,19 @@ export class Aggregator {
   async disconnect(): Promise<void> {
     await Promise.all(this.upstreams.map(({ client }) => client.close()));
   }
+}
+
+// --- helpers ---
+
+function buildTransport(srv: ServerConfig): Transport {
+  if (isHttpServer(srv)) {
+    return new StreamableHTTPClientTransport(new URL(srv.url), {
+      requestInit: { headers: srv.headers },
+    });
+  }
+  return new StdioClientTransport({
+    command: srv.command,
+    args: srv.args ?? [],
+    env: { ...process.env, ...srv.env } as Record<string, string>,
+  });
 }

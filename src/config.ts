@@ -33,8 +33,8 @@ export function isHttpServer(s: ServerConfig): s is HttpServer {
   return (s as HttpServer).type === "http";
 }
 
-export function loadConfig(path: string): Config {
-  const raw = readFileSync(path, "utf-8");
+export function loadConfig(filePath: string): Config {
+  const raw = readFileSync(filePath, "utf-8");
   // Expand env vars in the form ${VAR}
   const expanded = raw.replace(/\$\{(\w+)\}/g, (_match: string, name: string) => process.env[name] ?? "");
   return JSON.parse(expanded) as Config;

@@ -112,7 +112,10 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   scheduleShutdown();
 
   // Hot-reload on config change
+  let isReloading = false;
   watch(opts.configPath, { ignoreInitial: true }).on("change", async () => {
+    if (isReloading) return;
+    isReloading = true;
     console.error("[server] config changed — reloading");
     try {
       const next = await buildAggregator(opts.configPath);
@@ -121,11 +124,13 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       console.error(`[server] reloaded — ${aggregator.listTools().length} tools`);
     } catch (err) {
       console.error("[server] reload failed:", err);
+    } finally {
+      isReloading = false;
     }
   });
 
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
   async function shutdown(signal: string) {
     console.error(`[server] ${signal} — shutting down`);
