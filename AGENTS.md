@@ -222,6 +222,11 @@ await client.connect(new StdioClientTransport({ command, args, env }));
 DEFAULT_MCP_FILE = ~/.config/unimcp/mcp.json     (config.ts)
 CONFIG_DIR       = ~/.config/unimcp              (server.ts)
 PID_FILE         = ~/.config/unimcp/daemon.pid   (server.ts)
+SYSTEM_BIN_PATH  = /usr/local/bin/unimcp         (setup.ts)
+CLIENT_NAME      = "unimcp"                       (aggregator.ts)
+CLIENT_VERSION   = "1.0.0"                        (aggregator.ts)
+SPAWN_WAIT_S     = SPAWN_WAIT_MS / 1_000          (daemon.ts)
+SEP              = "__"                           (aggregator.ts)
 ```
 
 - The daemon is a **shared background process** — `pnpm dev` bridges to it rather than spawning upstreams per client
@@ -229,6 +234,16 @@ PID_FILE         = ~/.config/unimcp/daemon.pid   (server.ts)
 - `StreamableHTTPServerTransport` must be created **per request** (stateless: `sessionIdGenerator: undefined`)
 - Upstream stdio servers inherit `{ ...process.env, ...srv.env }` — merge, not replace
 - Reconnect on hot-reload: disconnect old aggregator before replacing with new one
+
+### Per-client tool filtering
+
+- The optional `clients` section in `mcp.json` maps client names to `ClientConfig = { tools?: ToolFilter }`
+- Client identity is carried as the `UNIMCP_CLIENT` env var in the bridge process, forwarded as `X-Client-Name` HTTP header to the daemon
+- The daemon reads `X-Client-Name` per request and resolves `config.clients[clientName]?.tools` as a `clientFilter`
+- `aggregator.listTools(clientFilter?)` applies both the per-server filter AND the client filter (both must pass)
+- `unimcp setup` auto-injects `UNIMCP_CLIENT=<targetId>` into the `env` block of each editor registration
+- Clients without a `clients` entry see all tools (open default — backwards compatible)
+- Direct HTTP callers (not via bridge) can set `X-Client-Name` header directly
 
 ---
 
@@ -273,6 +288,7 @@ Output format: `{ "mcpServers": { ... } }` — directly usable as unimcp's mcp.j
 - **Dedup**: skips a target if `"unimcp"` key already exists
 - **`--global --target=claude,copilot`**: force-write global even if file doesn't exist
 - OpenCode has no project-level equivalent (global only)
+- **`UNIMCP_CLIENT`**: each registration includes `"env": { "UNIMCP_CLIENT": "<targetId>" }` for per-client tool filtering
 
 ---
 
