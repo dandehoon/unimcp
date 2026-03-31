@@ -259,19 +259,19 @@ Output format: `{ "mcpServers": { ... } }` — directly usable as unimcp's mcp.j
 
 `unimcp setup` (or `pnpm register`) registers the binary in editor configs:
 
-**Local mode (default):** writes to `.mcp.json` (claude-code), `.cursor/mcp.json` (cursor), `.vscode/mcp.json` (copilot) in the current directory. Always creates/updates.
+**Local mode (default):** writes to `.mcp.json` (claude), `.cursor/mcp.json` (cursor), `.vscode/mcp.json` (copilot) in the current directory. Always creates/updates.
 
 **Global mode (`--global`):** writes to user-level config files. Only updates if the config file already exists. Use `--target` to force-create.
 
 | Target            | Local path (cwd)    | Global path                                      | Key          | Type value         |
 | ----------------- | ------------------- | ------------------------------------------------ | ------------ | ------------------ |
-| `claude-code`     | `.mcp.json`         | `~/.claude.json`                                 | `mcpServers` | _(implicit stdio)_ |
+| `claude`          | `.mcp.json`         | `~/.claude.json`                                 | `mcpServers` | _(implicit stdio)_ |
 | `cursor`          | `.cursor/mcp.json`  | `~/.cursor/mcp.json`                             | `mcpServers` | _(implicit stdio)_ |
 | `copilot`         | `.vscode/mcp.json`  | `~/Library/.../Code/User/mcp.json`               | `servers`    | `"stdio"`          |
 | `opencode`        | _(none)_            | `~/.config/opencode/opencode.json`               | `mcp`        | `"local"`          |
 
 - **Dedup**: skips a target if `"unimcp"` key already exists
-- **`--global --target=claude-code,copilot`**: force-write global even if file doesn't exist
+- **`--global --target=claude,copilot`**: force-write global even if file doesn't exist
 - OpenCode has no project-level equivalent (global only)
 
 ---

@@ -33,7 +33,7 @@ After installing, register unimcp in your editors.
 
 ### Local (project-level) — default
 
-Writes to `.mcp.json` (claude-code), `.cursor/mcp.json` (cursor), and `.vscode/mcp.json` (copilot) in the current directory:
+Writes to `.mcp.json` (claude), `.cursor/mcp.json` (cursor), and `.vscode/mcp.json` (copilot) in the current directory:
 
 ```bash
 unimcp setup
@@ -46,14 +46,14 @@ Updates existing global editor configs. Only updates configs for editors that al
 
 ```bash
 unimcp setup --global
-unimcp setup --global --target claude-code,copilot   # force-write even if file doesn't exist
+unimcp setup --global --target claude,copilot   # force-write even if file doesn't exist
 ```
 
 Supported targets:
 
 | Target | Local path (cwd) | Global path |
 |--------|-----------------|-------------|
-| `claude-code` | `.mcp.json` | `~/.claude.json` |
+| `claude` | `.mcp.json` | `~/.claude.json` |
 | `cursor` | `.cursor/mcp.json` | `~/.cursor/mcp.json` |
 | `copilot` | `.vscode/mcp.json` | `~/Library/Application Support/Code/User/mcp.json` |
 | `opencode` | _(none)_ | `~/.config/opencode/opencode.json` |

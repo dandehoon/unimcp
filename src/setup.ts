@@ -4,11 +4,11 @@
  * Modes:
  *   unimcp setup              # local: write project-level config files in cwd
  *   unimcp setup --global     # global: update existing user-level configs only (no new files)
- *   unimcp setup --target claude-code,copilot           # local for those targets
- *   unimcp setup --global --target claude-code,copilot  # global, forced even if file doesn't exist
+ *   unimcp setup --target claude,copilot           # local for those targets
+ *   unimcp setup --global --target claude,copilot  # global, forced even if file doesn't exist
  *
  * Supported targets:
- *   claude-code  local  → .mcp.json in cwd          global → ~/.claude.json (mcpServers key)
+ *   claude  local  → .mcp.json in cwd          global → ~/.claude.json (mcpServers key)
  *   cursor       local  → .cursor/mcp.json           global → ~/.cursor/mcp.json
  *   copilot      local  → .vscode/mcp.json           global → ~/Library/.../Code/User/mcp.json
  *   opencode     global only → ~/.config/opencode/opencode.json
@@ -24,7 +24,7 @@ const SERVER_NAME = "unimcp";
 
 // --- target definitions ---
 
-type TargetId = "claude-code" | "cursor" | "copilot" | "opencode";
+type TargetId = "claude" | "cursor" | "copilot" | "opencode";
 
 type TargetDef = {
   id: TargetId;
@@ -37,7 +37,7 @@ type TargetDef = {
 
 const TARGETS: TargetDef[] = [
   {
-    id: "claude-code",
+    id: "claude",
     label: "Claude Code",
     // user scope: ~/.claude.json top-level mcpServers
     globalConfigPath: path.join(HOME, ".claude.json"),
