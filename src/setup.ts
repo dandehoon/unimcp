@@ -32,8 +32,8 @@ type TargetDef = {
   label: string;
   globalConfigPath: string;
   localConfigPath: string | null; // null = no project-level equivalent
-  injectGlobal: (raw: string, binPath: string) => string;
-  injectLocal: (raw: string, binPath: string) => string;
+  injectGlobal: (raw: string, binPath: string, clientId: string) => string;
+  injectLocal: (raw: string, binPath: string, clientId: string) => string;
 };
 
 const TARGETS: TargetDef[] = [
@@ -101,7 +101,7 @@ function registerLocal(targets: TargetDef[], binPath: string): void {
   }
 
   for (const target of localTargets) {
-    registerTarget(target.label, target.localConfigPath!, binPath, target.injectLocal, true);
+    registerTarget(target.label, target.localConfigPath!, binPath, target.injectLocal, target.id, true);
   }
 }
 
@@ -117,7 +117,7 @@ function registerGlobal(targets: TargetDef[], binPath: string, force: boolean): 
       continue;
     }
 
-    registerTarget(target.label, configPath, binPath, target.injectGlobal, true);
+    registerTarget(target.label, configPath, binPath, target.injectGlobal, target.id, true);
     registered++;
   }
 
@@ -130,7 +130,8 @@ function registerTarget(
   label: string,
   configPath: string,
   binPath: string,
-  inject: (raw: string, binPath: string) => string,
+  inject: (raw: string, binPath: string, clientId: string) => string,
+  clientId: string,
   createIfMissing: boolean
 ): void {
   const fileExists = existsSync(configPath);
@@ -140,7 +141,7 @@ function registerTarget(
   mkdirSync(dir, { recursive: true });
 
   const existing = fileExists ? readFileSync(configPath, "utf-8") : "";
-  const updated = inject(existing, binPath);
+  const updated = inject(existing, binPath, clientId);
 
   if (updated === existing) {
     console.error(`[setup] ${label}: already registered — skipped`);
@@ -167,39 +168,39 @@ function parseTargetFlag(argv: string[]): TargetId[] | null {
 }
 
 /** Injects into {"mcpServers": {...}} format (Claude Code project/global scope, Cursor). */
-export function injectMcpServers(raw: string, binPath: string): string {
+export function injectMcpServers(raw: string, binPath: string, clientId: string): string {
   const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
   const servers = (config["mcpServers"] ?? {}) as Record<string, unknown>;
 
   if (servers[SERVER_NAME]) return raw; // dedup
 
-  servers[SERVER_NAME] = { command: binPath };
+  servers[SERVER_NAME] = { command: binPath, env: { UNIMCP_CLIENT: clientId } };
   config["mcpServers"] = servers;
   return JSON.stringify(config, null, 2) + "\n";
 }
 
 /** Injects into {"servers": {...}} format (VS Code / GitHub Copilot). */
-export function injectVsCodeServers(raw: string, binPath: string): string {
+export function injectVsCodeServers(raw: string, binPath: string, clientId: string): string {
   const stripped = stripJsonComments(raw);
   const config = stripped.trim() ? (JSON.parse(stripped) as Record<string, unknown>) : {};
   const servers = (config["servers"] ?? {}) as Record<string, unknown>;
 
   if (servers[SERVER_NAME]) return raw; // dedup
 
-  servers[SERVER_NAME] = { type: "stdio", command: binPath, args: [] };
+  servers[SERVER_NAME] = { type: "stdio", command: binPath, args: [], env: { UNIMCP_CLIENT: clientId } };
   config["servers"] = servers;
   if (!config["inputs"]) config["inputs"] = [];
   return JSON.stringify(config, null, 2) + "\n";
 }
 
 /** Injects into {"mcp": {...}} format (OpenCode). */
-export function injectOpenCode(raw: string, binPath: string): string {
+export function injectOpenCode(raw: string, binPath: string, clientId: string): string {
   const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
   const mcp = (config["mcp"] ?? {}) as Record<string, unknown>;
 
   if (mcp[SERVER_NAME]) return raw; // dedup
 
-  mcp[SERVER_NAME] = { type: "local", command: [binPath], enabled: true };
+  mcp[SERVER_NAME] = { type: "local", command: [binPath], enabled: true, env: { UNIMCP_CLIENT: clientId } };
   config["mcp"] = mcp;
   return JSON.stringify(config, null, 2) + "\n";
 }

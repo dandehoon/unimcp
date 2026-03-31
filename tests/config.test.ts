@@ -49,4 +49,20 @@ describe("loadConfig", () => {
     const config = loadConfig(file);
     expect((config.mcpServers["s"] as { command: string }).command).toBe("");
   });
+
+  test("loads clients section with tool filters", () => {
+    const file = join(dir, "clients.json");
+    writeFileSync(file, JSON.stringify({
+      mcpServers: {
+        searxng: { command: "searxng-mcp" },
+      },
+      clients: {
+        copilot: { tools: { exclude: ["searxng__*"] } },
+        claude: { tools: { include: ["*"] } },
+      },
+    }));
+    const config = loadConfig(file);
+    expect(config.clients?.["copilot"]).toEqual({ tools: { exclude: ["searxng__*"] } });
+    expect(config.clients?.["claude"]).toEqual({ tools: { include: ["*"] } });
+  });
 });

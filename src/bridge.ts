@@ -22,9 +22,12 @@ export type BridgeOptions = {
 
 export async function runBridge(opts: BridgeOptions): Promise<void> {
   const daemonUrl = new URL(`http://${opts.host}:${opts.port}/mcp`);
+  const clientName = process.env["UNIMCP_CLIENT"];
 
   const client = new Client({ name: "unimcp-bridge", version: "1.0.0" });
-  const clientTransport = new StreamableHTTPClientTransport(daemonUrl);
+  const clientTransport = new StreamableHTTPClientTransport(daemonUrl, {
+    requestInit: clientName ? { headers: { "x-client-name": clientName } } : undefined,
+  });
   await client.connect(clientTransport);
 
   const initialTools = await client.listTools();

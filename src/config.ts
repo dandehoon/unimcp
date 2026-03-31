@@ -9,6 +9,10 @@ export type ToolFilter = {
   exclude?: string[]; // glob patterns — defaults to [] (none)
 };
 
+export type ClientConfig = {
+  tools?: ToolFilter;
+};
+
 export type StdioServer = {
   command: string;
   args?: string[];
@@ -27,6 +31,7 @@ export type ServerConfig = StdioServer | HttpServer;
 
 export type Config = {
   mcpServers: Record<string, ServerConfig>;
+  clients?: Record<string, ClientConfig>;
 };
 
 export function isHttpServer(s: ServerConfig): s is HttpServer {

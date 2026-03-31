@@ -50,10 +50,11 @@ export class Aggregator {
     }
   }
 
-  listTools(): AggregatedTool[] {
+  listTools(clientFilter?: ToolFilter): AggregatedTool[] {
     return this.upstreams.flatMap(({ name, tools, filter }) =>
       tools
         .filter((t) => matchesFilter(t.name, filter))
+        .filter((t) => matchesFilter(t.name, clientFilter))
         .map((t) => ({
           ...t,
           name: `${name}${SEP}${t.name}`,

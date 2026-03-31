@@ -18,7 +18,7 @@ import {
   ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, type Config, type ToolFilter } from "./config.js";
 import { Aggregator } from "./aggregator.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
@@ -31,14 +31,14 @@ export type ManagedServerOptions = {
   configPath: string;
 };
 
-function buildMcpServer(aggregator: Aggregator): Server {
+function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Server {
   const server = new Server(
     { name: "unimcp", version: "1.0.0" },
     { capabilities: { tools: {} } }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: aggregator.listTools().map(({ upstreamName: _u, originalName: _o, ...tool }) => tool),
+    tools: aggregator.listTools(clientFilter).map(({ upstreamName: _u, originalName: _o, ...tool }) => tool),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
@@ -54,7 +54,7 @@ function buildMcpServer(aggregator: Aggregator): Server {
 }
 
 export async function startManagedServer(opts: ManagedServerOptions): Promise<void> {
-  let aggregator = await buildAggregator(opts.configPath);
+  let { aggregator, config } = await buildAggregator(opts.configPath);
   let activeSessions = 0;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -87,7 +87,9 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     activeSessions++;
     cancelShutdown();
 
-    const mcpServer = buildMcpServer(aggregator);
+    const clientName = req.headers["x-client-name"] as string | undefined;
+    const clientFilter = clientName ? config.clients?.[clientName]?.tools : undefined;
+    const mcpServer = buildMcpServer(aggregator, clientFilter);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
     res.on("close", () => {
@@ -120,7 +122,8 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     try {
       const next = await buildAggregator(opts.configPath);
       await aggregator.disconnect();
-      aggregator = next;
+      aggregator = next.aggregator;
+      config = next.config;
       console.error(`[server] reloaded — ${aggregator.listTools().length} tools`);
     } catch (err) {
       console.error("[server] reload failed:", err);
@@ -142,12 +145,12 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
 
 // --- helpers ---
 
-async function buildAggregator(configPath: string): Promise<Aggregator> {
+async function buildAggregator(configPath: string): Promise<{ aggregator: Aggregator; config: Config }> {
   const config = loadConfig(configPath);
   const aggregator = new Aggregator();
   await aggregator.connect(config);
   console.error(`[server] ${aggregator.listTools().length} tools ready`);
-  return aggregator;
+  return { aggregator, config };
 }
 
 /** Tries to listen on preferredPort; if EADDRINUSE, falls back to port 0 (OS-assigned). */
