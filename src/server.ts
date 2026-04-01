@@ -147,9 +147,9 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     resolveReady();
   }
 
-  // Hot-reload on config change
+  // Hot-reload on config change or creation
   let isReloading = false;
-  watch(opts.configPath, { ignoreInitial: true }).on("change", async () => {
+  const handleReload = async () => {
     if (isReloading || initializing) return;
     isReloading = true;
     console.error("[server] config changed — reloading");
@@ -164,7 +164,8 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     } finally {
       isReloading = false;
     }
-  });
+  };
+  watch(opts.configPath, { ignoreInitial: true }).on("change", handleReload).on("add", handleReload);
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
