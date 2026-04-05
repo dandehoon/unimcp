@@ -54,7 +54,7 @@ async function main() {
 
   // Default (stdio) mode: ensure daemon is running, then bridge stdio ↔ daemon HTTP.
   const actualPort = await ensureDaemon({ port: PORT, host: HOST, configPath: CONFIG_PATH, envHash: ENV_HASH });
-  await runBridge({ port: actualPort, host: HOST });
+  await runBridge({ port: actualPort, host: HOST, configPath: CONFIG_PATH });
 }
 
 main().catch((err) => {

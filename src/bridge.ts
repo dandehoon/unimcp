@@ -14,10 +14,15 @@ import {
   ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { loadConfig } from "./config.js";
+
+const SEP = "__";
 
 export type BridgeOptions = {
   port: number;
   host: string;
+  configPath: string;
 };
 
 export async function runBridge(opts: BridgeOptions): Promise<void> {
@@ -31,7 +36,7 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   await client.connect(clientTransport);
 
   const initialTools = await client.listTools();
-  console.error(`[bridge] connected to daemon — ${initialTools.tools.length} tools available`);
+  logConnectionStatus(initialTools.tools, opts.configPath);
 
   const server = new Server(
     { name: "unimcp", version: "1.0.0" },
@@ -70,4 +75,29 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   process.stdin.on("close", shutdown);
+}
+
+// --- helpers ---
+
+/** Logs per-upstream connection status so users can spot failed upstreams without reading daemon logs. */
+function logConnectionStatus(tools: Tool[], configPath: string): void {
+  let configuredNames: string[] = [];
+  try {
+    const config = loadConfig(configPath);
+    configuredNames = Object.keys(config.mcpServers);
+  } catch {
+    // config unreadable — fall back to simple count
+    console.error(`[bridge] connected to daemon — ${tools.length} tools available`);
+    return;
+  }
+
+  const connectedNames = new Set(tools.map((t) => t.name.slice(0, t.name.indexOf(SEP))).filter(Boolean));
+  const failed = configuredNames.filter((n) => !connectedNames.has(n));
+
+  const parts = configuredNames.map((n) =>
+    connectedNames.has(n) ? `${n}: ok` : `${n}: no tools`
+  );
+
+  const suffix = failed.length > 0 ? ` ⚠ ${failed.length} upstream(s) unavailable` : "";
+  console.error(`[bridge] connected to daemon — ${tools.length} tools (${parts.join(", ")})${suffix}`);
 }
