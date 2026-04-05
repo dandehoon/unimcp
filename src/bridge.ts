@@ -48,14 +48,20 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
       const result = await client.listTools();
       return { tools: result.tools };
     } catch (err) {
-      throw new McpError(ErrorCode.InternalError, `Failed to list tools: ${String(err)}`);
+      if (err instanceof McpError) throw err;
+      throw new McpError(ErrorCode.InternalError, `[bridge] listTools failed: ${String(err)}`);
     }
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
-    // Do not re-wrap: errors from the daemon are already McpErrors.
-    return client.callTool({ name, arguments: args ?? {} });
+    try {
+      return await client.callTool({ name, arguments: args ?? {} });
+    } catch (err) {
+      // Preserve daemon error codes (e.g. InvalidParams) rather than flattening to InternalError.
+      if (err instanceof McpError) throw err;
+      throw new McpError(ErrorCode.InternalError, `[bridge] callTool failed: ${String(err)}`);
+    }
   });
 
   const stdioTransport = new StdioServerTransport();

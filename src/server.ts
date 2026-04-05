@@ -93,7 +93,10 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     }
 
     // Only SSE GET streams indicate a connected client; POST requests are individual tool calls.
-    // Bun does not fire res.on("close"), so we use req.on("close").
+    // Bun fires req.on("close") at request-body-end (not TCP close), so for POSTs it fires
+    // immediately — before the response is written. Counting POSTs would decrement activeSessions
+    // to 0 after every tool call and arm the shutdown timer mid-flight, AND calling
+    // transport?.close() on a POST tears down the transport while the response is still being sent.
     const isSession = req.method === "GET";
     if (isSession) {
       activeSessions++;
@@ -101,12 +104,13 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     }
 
     let transport: StreamableHTTPServerTransport | null = null;
+    // Use req.on("close") instead of res.on("close") — Bun does not fire res close events.
     req.on("close", () => {
       if (isSession) {
         activeSessions--;
         if (activeSessions === 0) scheduleShutdown();
+        try { transport?.close(); } catch { /* not yet connected */ }
       }
-      try { transport?.close(); } catch { /* not yet connected */ }
     });
 
     const ready = await Promise.race([
