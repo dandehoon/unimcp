@@ -33,7 +33,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "chokidar": "^5.0.0",
-    "dotenv": "^17.3.1",
     "minimatch": "^10.2.5"
   },
   "packageManager": "pnpm@10.18.2",

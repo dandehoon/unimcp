@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { readFileSync } from "fs";
 import path from "path";
 import os from "os";
@@ -43,4 +44,21 @@ export function loadConfig(filePath: string): Config {
   // Expand env vars in the form ${VAR}
   const expanded = raw.replace(/\$\{(\w+)\}/g, (_match: string, name: string) => process.env[name] ?? "");
   return JSON.parse(expanded) as Config;
+}
+
+export function computeEnvHash(filePath: string): string {
+  let content = "";
+  try {
+    content = readFileSync(filePath, "utf-8");
+  } catch {
+    // file does not exist or cannot be read — use empty string
+  }
+  const varNames = new Set<string>();
+  for (const match of content.matchAll(/\$\{(\w+)\}/g)) {
+    varNames.add(match[1]);
+  }
+  const record = Object.fromEntries(
+    [...varNames].sort().map((name) => [name, process.env[name] ?? ""]),
+  );
+  return createHash("sha256").update(JSON.stringify(record)).digest("hex").slice(0, 8);
 }

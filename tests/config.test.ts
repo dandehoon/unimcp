@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { loadConfig, isHttpServer } from "../src/config.js";
-import { writeFileSync, mkdirSync } from "fs";
+import { loadConfig, isHttpServer, computeEnvHash } from "../src/config.js";
+import { writeFileSync, unlinkSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -64,5 +64,49 @@ describe("loadConfig", () => {
     const config = loadConfig(file);
     expect(config.clients?.["copilot"]).toEqual({ tools: { exclude: ["searxng__*"] } });
     expect(config.clients?.["claude"]).toEqual({ tools: { include: ["*"] } });
+  });
+});
+
+describe("computeEnvHash", () => {
+  test("same env → same hash", () => {
+    const file = join(tmpdir(), `unimcp-hash-same-${Date.now()}.json`);
+    writeFileSync(file, JSON.stringify({ url: "${FOO}", token: "${BAR}" }));
+    process.env.FOO = "hello";
+    process.env.BAR = "world";
+    const hash1 = computeEnvHash(file);
+    const hash2 = computeEnvHash(file);
+    expect(hash1).toBe(hash2);
+    delete process.env.FOO;
+    delete process.env.BAR;
+    unlinkSync(file);
+  });
+
+  test("different env → different hash", () => {
+    const file = join(tmpdir(), `unimcp-hash-diff-${Date.now()}.json`);
+    writeFileSync(file, JSON.stringify({ url: "${FOO}" }));
+    process.env.FOO = "x";
+    const hash1 = computeEnvHash(file);
+    process.env.FOO = "y";
+    const hash2 = computeEnvHash(file);
+    expect(hash1).not.toBe(hash2);
+    delete process.env.FOO;
+    unlinkSync(file);
+  });
+
+  test("no ${VAR} references → stable 8-char hex", () => {
+    const file = join(tmpdir(), `unimcp-hash-novar-${Date.now()}.json`);
+    writeFileSync(file, JSON.stringify({ mcpServers: {} }));
+    const hash1 = computeEnvHash(file);
+    const hash2 = computeEnvHash(file);
+    expect(hash1).toHaveLength(8);
+    expect(hash1).toMatch(/^[0-9a-f]{8}$/);
+    expect(hash1).toBe(hash2);
+    unlinkSync(file);
+  });
+
+  test("missing file → returns 8-char hex string (does not throw)", () => {
+    const hash = computeEnvHash("/tmp/does-not-exist-unimcp-test.json");
+    expect(hash).toHaveLength(8);
+    expect(hash).toMatch(/^[0-9a-f]{8}$/);
   });
 });

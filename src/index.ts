@@ -1,11 +1,10 @@
-import "dotenv/config";
 import path from "path";
 import { startManagedServer } from "./server.js";
 import { ensureDaemon } from "./daemon.js";
 import { runBridge } from "./bridge.js";
 import { runSetup } from "./setup.js";
 import { runCollect } from "./collect.js";
-import { DEFAULT_MCP_FILE } from "./config.js";
+import { DEFAULT_MCP_FILE, computeEnvHash } from "./config.js";
 
 const PORT = Number(process.env.UNIMCP_PORT ?? process.env.PORT ?? 4848);
 const HOST = process.env.UNIMCP_HOST ?? process.env.HOST ?? "127.0.0.1";
@@ -28,6 +27,14 @@ function resolveMcpFile(): string {
 
 const CONFIG_PATH = resolveMcpFile();
 
+function resolveEnvHash(): string {
+  const flagIdx = args.indexOf("--env-hash");
+  if (flagIdx !== -1 && args[flagIdx + 1]) return args[flagIdx + 1];
+  return computeEnvHash(CONFIG_PATH);
+}
+
+const ENV_HASH = resolveEnvHash();
+
 async function main() {
   if (command === "setup") {
     await runSetup(restArgs);
@@ -40,12 +47,12 @@ async function main() {
   }
 
   if (useHttp || isDaemon) {
-    await startManagedServer({ port: PORT, host: HOST, configPath: CONFIG_PATH });
+    await startManagedServer({ port: PORT, host: HOST, configPath: CONFIG_PATH, envHash: ENV_HASH });
     return;
   }
 
   // Default (stdio) mode: ensure daemon is running, then bridge stdio ↔ daemon HTTP.
-  const actualPort = await ensureDaemon({ port: PORT, host: HOST, configPath: CONFIG_PATH });
+  const actualPort = await ensureDaemon({ port: PORT, host: HOST, configPath: CONFIG_PATH, envHash: ENV_HASH });
   await runBridge({ port: actualPort, host: HOST });
 }
 

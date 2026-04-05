@@ -24,12 +24,11 @@ import { Aggregator } from "./aggregator.js";
 const IDLE_TIMEOUT_MS = 30_000;
 const READY_TIMEOUT_MS = 60_000;
 export const CONFIG_DIR = path.join(os.homedir(), ".config", "unimcp");
-export const PID_FILE = path.join(CONFIG_DIR, "daemon.pid");
-
 export type ManagedServerOptions = {
   port: number;
   host: string;
   configPath: string;
+  envHash: string;
 };
 
 function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Server {
@@ -55,6 +54,8 @@ function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Serv
 }
 
 export async function startManagedServer(opts: ManagedServerOptions): Promise<void> {
+  const pidFile = path.join(CONFIG_DIR, `daemon.${opts.envHash}.pid`);
+  let watcher: ReturnType<typeof watch> | null = null;
   let aggregator: Aggregator | null = null;
   let config: Config | null = null;
   let activeSessions = 0;
@@ -66,7 +67,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     if (idleTimer) return;
     idleTimer = setTimeout(() => {
       console.error("[server] no active sessions for 30 s — shutting down");
-      try { unlinkSync(PID_FILE); } catch { /* already gone */ }
+      try { unlinkSync(pidFile); } catch { /* already gone */ }
       process.exit(0);
     }, IDLE_TIMEOUT_MS);
   }
@@ -127,11 +128,8 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   const boundPort = await listenWithFallback(httpServer, opts.port, opts.host);
 
   mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(PID_FILE, `${process.pid}:${boundPort}`, "utf-8");
+  writeFileSync(pidFile, `${process.pid}:${boundPort}`, "utf-8");
   console.error(`[server] listening on http://${opts.host}:${boundPort}/mcp`);
-
-  // Start idle timer; cancelled when first client connects.
-  scheduleShutdown();
 
   // Connect to upstreams AFTER server is listening.
   let initializing = true;
@@ -145,6 +143,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   } finally {
     initializing = false;
     resolveReady();
+    if (activeSessions === 0) scheduleShutdown();
   }
 
   // Hot-reload on config change or creation
@@ -165,15 +164,17 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       isReloading = false;
     }
   };
-  watch(opts.configPath, { ignoreInitial: true }).on("change", handleReload).on("add", handleReload);
+  watcher = watch(opts.configPath, { ignoreInitial: true });
+  watcher.on("change", handleReload).on("add", handleReload);
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
   async function shutdown(signal: string) {
     console.error(`[server] ${signal} — shutting down`);
-    try { unlinkSync(PID_FILE); } catch { /* already gone */ }
+    try { unlinkSync(pidFile); } catch { /* already gone */ }
     await aggregator?.disconnect();
+    await watcher?.close();
     httpServer.close();
     process.exit(0);
   }

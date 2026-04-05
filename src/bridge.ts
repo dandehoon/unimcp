@@ -55,11 +55,13 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   const stdioTransport = new StdioServerTransport();
   await server.connect(stdioTransport);
 
-  async function shutdown() {
-    await Promise.all([client.close(), server.close()]);
+  function shutdown(): void {
+    const transport = client.transport as StreamableHTTPClientTransport | undefined;
+    transport?.terminateSession().catch(() => {});
     process.exit(0);
   }
 
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  process.stdin.on("close", shutdown);
 }
