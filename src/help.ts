@@ -1,5 +1,5 @@
 export function printHelp(): void {
-  console.error(`Usage: unimcp [command] [flags]
+  process.stdout.write(`Usage: unimcp [command] [flags]
 
 Commands:
   (default)       Start in stdio mode — ensures daemon, then bridges stdio ↔ HTTP
@@ -18,5 +18,5 @@ Flags:
   -o <path>           (collect) Write output to a file
   --save              (collect) Write to --mcp-file path
 
-Config: --mcp-file flag > UNIMCP_CONFIG > ~/.config/unimcp/mcp.json`);
+Config: --mcp-file flag > UNIMCP_CONFIG > ~/.config/unimcp/mcp.json\n`);
 }

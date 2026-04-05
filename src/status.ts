@@ -6,6 +6,7 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { CONFIG_DIR } from "./server.js";
 
 const SEP = "__";
+const out = (s = "") => process.stdout.write(s + "\n");
 
 export type StatusOptions = {
   envHash: string;
@@ -18,7 +19,7 @@ export async function runStatus(opts: StatusOptions): Promise<void> {
   try {
     entries = readdirSync(CONFIG_DIR);
   } catch {
-    console.error("[status] no daemons running");
+    out("No daemons running.");
     return;
   }
 
@@ -27,12 +28,12 @@ export async function runStatus(opts: StatusOptions): Promise<void> {
   );
 
   if (pidFiles.length === 0) {
-    console.error("[status] no daemons running");
+    out("No daemons running.");
     return;
   }
 
   for (let i = 0; i < pidFiles.length; i++) {
-    if (i > 0) console.error("");
+    if (i > 0) out();
     const filename = pidFiles[i];
     const envHash = filename.slice("daemon.".length, -".pid".length);
     await checkDaemon(envHash, filename, opts);
@@ -51,24 +52,22 @@ async function checkDaemon(
   const port = Number(portStr);
 
   if (isNaN(pid) || isNaN(port)) {
-    console.error(`[status] pid file corrupt: ${pidFile}`);
+    out(`[corrupt pid file: ${pidFile}]`);
     return;
   }
 
   try {
     process.kill(pid, 0);
   } catch {
-    console.error(`[status] daemon ${envHash} — PID ${pid} not alive — stale pid file`);
+    out(`Daemon ${envHash}  PID ${pid}  stale (process not alive)`);
     return;
   }
 
   const configLabel =
-    envHash === opts.envHash
-      ? opts.configPath
-      : "(unknown — different env context)";
+    envHash === opts.envHash ? opts.configPath : "(unknown — different env context)";
 
-  console.error(`[status] daemon ${envHash} — PID ${pid} — http://${opts.host}:${port}/mcp`);
-  console.error(`[status] config: ${configLabel}`);
+  out(`Daemon ${envHash}  PID ${pid}  http://${opts.host}:${port}/mcp`);
+  out(`Config ${configLabel}`);
 
   const client = new Client({ name: "unimcp-status", version: "1.0.0" });
   try {
@@ -76,7 +75,7 @@ async function checkDaemon(
       new StreamableHTTPClientTransport(new URL(`http://${opts.host}:${port}/mcp`))
     );
   } catch (err) {
-    console.error("[status] daemon unreachable:", err);
+    out(`  [unreachable: ${String(err)}]`);
     return;
   }
 
@@ -85,7 +84,7 @@ async function checkDaemon(
     const result = await client.listTools();
     tools = result.tools;
   } catch (err) {
-    console.error("[status] listTools failed:", err);
+    out(`  [listTools failed: ${String(err)}]`);
     await client.close();
     return;
   }
@@ -108,11 +107,11 @@ function printTools(tools: Tool[]): void {
     map.set(upstream, names);
   }
 
-  console.error(`[status] ${tools.length} tool(s) across ${map.size} upstream(s):`);
+  out(`Tools  ${tools.length} across ${map.size} upstream(s)`);
   for (const [upstream, names] of map) {
-    console.error(`  ${upstream} (${names.length})`);
+    out(`  ${upstream}  (${names.length})`);
     for (const name of names) {
-      console.error(`    - ${name}`);
+      out(`    ${name}`);
     }
   }
 }
