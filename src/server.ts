@@ -69,7 +69,8 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     idleTimer = setTimeout(() => {
       console.error("[server] no active sessions for 30 s — shutting down");
       try { unlinkSync(pidFile); } catch { /* already gone */ }
-      process.exit(0);
+      aggregator?.disconnect().catch(() => {}).finally(() => process.exit(0));
+      setTimeout(() => process.exit(0), 5_000).unref();
     }, IDLE_TIMEOUT_MS);
   }
 
