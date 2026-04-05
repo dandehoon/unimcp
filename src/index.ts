@@ -5,6 +5,8 @@ import { runBridge } from "./bridge.js";
 import { runSetup } from "./setup.js";
 import { runCollect } from "./collect.js";
 import { DEFAULT_MCP_FILE, computeEnvHash } from "./config.js";
+import { printHelp } from "./help.js";
+import { runStatus } from "./status.js";
 
 const PORT = Number(process.env.UNIMCP_PORT ?? process.env.PORT ?? 4848);
 const HOST = process.env.UNIMCP_HOST ?? process.env.HOST ?? "127.0.0.1";
@@ -37,6 +39,16 @@ function resolveEnvHash(): string {
 const ENV_HASH = resolveEnvHash();
 
 async function main() {
+  if (args.includes("--help") || command === "help") {
+    printHelp();
+    return;
+  }
+
+  if (command === "status") {
+    await runStatus({ envHash: ENV_HASH, host: HOST, configPath: CONFIG_PATH });
+    return;
+  }
+
   if (command === "setup") {
     await runSetup(restArgs);
     return;
@@ -50,6 +62,12 @@ async function main() {
   if (useHttp || isDaemon) {
     await startManagedServer({ port: PORT, host: HOST, configPath: CONFIG_PATH, envHash: ENV_HASH });
     return;
+  }
+
+  if (command && !command.startsWith("-")) {
+    console.error(`[unimcp] unknown command: ${command}`);
+    printHelp();
+    process.exit(1);
   }
 
   // Default (stdio) mode: ensure daemon is running, then bridge stdio ↔ daemon HTTP.
