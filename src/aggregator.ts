@@ -10,6 +10,7 @@ const SEP = "__";
 const CLIENT_NAME = "unimcp";
 const CLIENT_VERSION = "1.0.0";
 const CONNECT_TIMEOUT_MS = 30_000;
+const CALL_TIMEOUT_MS = 60_000;
 
 type UpstreamEntry = {
   name: string;
@@ -74,7 +75,11 @@ export class Aggregator {
     const upstream = this.upstreams.find((u) => u.name === upstreamName);
     if (!upstream) throw new Error(`Unknown upstream: ${upstreamName}`);
 
-    return upstream.client.callTool({ name: toolName, arguments: args });
+    return withTimeout(
+      upstream.client.callTool({ name: toolName, arguments: args }),
+      CALL_TIMEOUT_MS,
+      `[${upstreamName}] callTool timed out`,
+    );
   }
 
   async disconnect(): Promise<void> {

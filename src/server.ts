@@ -156,10 +156,13 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     console.error("[server] config changed — reloading");
     try {
       const next = await buildAggregator(opts.configPath);
-      await aggregator?.disconnect();
+      // Swap reference first so new requests hit the fresh aggregator immediately,
+      // then tear down the old one (eliminates race window and simultaneous live connections).
+      const old = aggregator;
       aggregator = next.aggregator;
       config = next.config;
       console.error(`[server] reloaded — ${aggregator.listTools().length} tools`);
+      await old?.disconnect();
     } catch (err) {
       console.error("[server] reload failed:", err);
     } finally {
