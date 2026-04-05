@@ -1,7 +1,7 @@
 /**
  * Managed HTTP MCP server.
  * - Tries preferred port; falls back to OS-assigned port if in use.
- * - Writes "<pid>:<port>" to PID_FILE once bound so the bridge can find us.
+ * - Writes "<pid>:<port>" to daemon.<envHash>.pid once bound so the bridge can find us.
  * - Tracks active sessions; auto-terminates after 30 s of idle.
  * - Watches mcp.json with chokidar; hot-reloads aggregator on change.
  */
@@ -62,6 +62,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   let resolveReady: () => void = () => {};
   const readyPromise = new Promise<void>((r) => { resolveReady = r; });
+  let isShuttingDown = false;
 
   function scheduleShutdown() {
     if (idleTimer) return;
@@ -171,6 +172,8 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
   async function shutdown(signal: string) {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
     console.error(`[server] ${signal} — shutting down`);
     try { unlinkSync(pidFile); } catch { /* already gone */ }
     await aggregator?.disconnect();

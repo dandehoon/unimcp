@@ -55,7 +55,10 @@ async function runningDaemon(envHash: string, host: string): Promise<DaemonInfo 
   }
 
   const healthy = await checkHealth(host, info.port);
-  if (!healthy) return null;
+  if (!healthy) {
+    try { unlinkSync(pidFile); } catch { /* already gone */ }
+    return null;
+  }
 
   return info;
 }

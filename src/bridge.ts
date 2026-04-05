@@ -55,9 +55,14 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   const stdioTransport = new StdioServerTransport();
   await server.connect(stdioTransport);
 
+  let exiting = false;
+
   function shutdown(): void {
-    const transport = client.transport as StreamableHTTPClientTransport | undefined;
-    transport?.terminateSession().catch(() => {});
+    if (exiting) return;
+    exiting = true;
+    if (client.transport instanceof StreamableHTTPClientTransport) {
+      client.transport.terminateSession().catch(() => {});
+    }
     process.exit(0);
   }
 

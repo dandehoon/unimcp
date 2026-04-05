@@ -211,22 +211,24 @@ await client.connect(new StdioClientTransport({ command, args, env }));
 ## Key architectural rules
 
 - `mcp.json` is **gitignored** — never commit it; it is user-local
-- `.env` is **gitignored** — secrets only; `${VAR}` in `mcp.json` is expanded at load time
+- `.env` is **gitignored** — no longer auto-loaded; secrets must be set in the shell environment before launching unimcp. `${VAR}` in `mcp.json` is expanded from `process.env` at load time.
 - The default mcp config is **`~/.config/unimcp/mcp.json`** (`DEFAULT_MCP_FILE` exported from `config.ts`); override with `--mcp-file` flag or `CONFIG` env var
-- The daemon pid file lives at **`~/.config/unimcp/daemon.pid`** (not in cwd)
+- Daemon pid files live at **`~/.config/unimcp/daemon.<envHash>.pid`** (not in cwd)
+  - `envHash` is an 8-char lowercase hex SHA-256 over the values of all `${VAR}` references in `mcp.json` from the bridge's `process.env`
   - Format: `"<pid>:<port>"` e.g. `"94663:4848"` or `"94844:52341"` (after port fallback)
-  - `CONFIG_DIR` and `PID_FILE` constants are exported from `server.ts`, imported by `daemon.ts`
+  - `CONFIG_DIR` is exported from `server.ts`; pid file path is computed dynamically from `envHash` in both `server.ts` and `daemon.ts`
+  - Each distinct env context spawns its own isolated daemon; clients sharing the same env hash reuse one daemon
 
 ### Key constants
 ```
-DEFAULT_MCP_FILE = ~/.config/unimcp/mcp.json     (config.ts)
-CONFIG_DIR       = ~/.config/unimcp              (server.ts)
-PID_FILE         = ~/.config/unimcp/daemon.pid   (server.ts)
-SYSTEM_BIN_PATH  = /usr/local/bin/unimcp         (setup.ts)
-CLIENT_NAME      = "unimcp"                       (aggregator.ts)
-CLIENT_VERSION   = "1.0.0"                        (aggregator.ts)
-SPAWN_WAIT_S     = SPAWN_WAIT_MS / 1_000          (daemon.ts)
-SEP              = "__"                           (aggregator.ts)
+DEFAULT_MCP_FILE = ~/.config/unimcp/mcp.json            (config.ts)
+CONFIG_DIR       = ~/.config/unimcp                     (server.ts)
+PID_FILE         = ~/.config/unimcp/daemon.<envHash>.pid (computed in server.ts / daemon.ts)
+SYSTEM_BIN_PATH  = /usr/local/bin/unimcp                (setup.ts)
+CLIENT_NAME      = "unimcp"                              (aggregator.ts)
+CLIENT_VERSION   = "1.0.0"                              (aggregator.ts)
+SPAWN_WAIT_S     = SPAWN_WAIT_MS / 1_000                (daemon.ts)
+SEP              = "__"                                 (aggregator.ts)
 ```
 
 - The daemon is a **shared background process** — `pnpm dev` bridges to it rather than spawning upstreams per client

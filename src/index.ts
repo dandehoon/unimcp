@@ -29,7 +29,8 @@ const CONFIG_PATH = resolveMcpFile();
 
 function resolveEnvHash(): string {
   const flagIdx = args.indexOf("--env-hash");
-  if (flagIdx !== -1 && args[flagIdx + 1]) return args[flagIdx + 1];
+  const candidate = flagIdx !== -1 ? args[flagIdx + 1] : undefined;
+  if (candidate && /^[0-9a-f]{8}$/.test(candidate)) return candidate;
   return computeEnvHash(CONFIG_PATH);
 }
 
