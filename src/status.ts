@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { readdirSync, readFileSync } from "fs";
 import path from "path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -14,32 +14,61 @@ export type StatusOptions = {
 };
 
 export async function runStatus(opts: StatusOptions): Promise<void> {
-  const pidFile = path.join(CONFIG_DIR, `daemon.${opts.envHash}.pid`);
-
-  if (!existsSync(pidFile)) {
-    console.error("[status] no daemon running");
+  let entries: string[];
+  try {
+    entries = readdirSync(CONFIG_DIR);
+  } catch {
+    console.error("[status] no daemons running");
     return;
   }
 
+  const pidFiles = entries.filter(
+    (e) => e.startsWith("daemon.") && e.endsWith(".pid")
+  );
+
+  if (pidFiles.length === 0) {
+    console.error("[status] no daemons running");
+    return;
+  }
+
+  for (let i = 0; i < pidFiles.length; i++) {
+    if (i > 0) console.error("");
+    const filename = pidFiles[i];
+    const envHash = filename.slice("daemon.".length, -".pid".length);
+    await checkDaemon(envHash, filename, opts);
+  }
+}
+
+async function checkDaemon(
+  envHash: string,
+  filename: string,
+  opts: StatusOptions
+): Promise<void> {
+  const pidFile = path.join(CONFIG_DIR, filename);
   const content = readFileSync(pidFile, "utf-8").trim();
   const [pidStr, portStr] = content.split(":");
   const pid = Number(pidStr);
   const port = Number(portStr);
 
   if (isNaN(pid) || isNaN(port)) {
-    console.error("[status] pid file corrupt:", pidFile);
+    console.error(`[status] pid file corrupt: ${pidFile}`);
     return;
   }
 
   try {
     process.kill(pid, 0);
   } catch {
-    console.error(`[status] daemon PID ${pid} not alive — stale pid file`);
+    console.error(`[status] daemon ${envHash} — PID ${pid} not alive — stale pid file`);
     return;
   }
 
-  console.error(`[status] daemon PID ${pid} — http://${opts.host}:${port}/mcp`);
-  console.error(`[status] config: ${opts.configPath}`);
+  const configLabel =
+    envHash === opts.envHash
+      ? opts.configPath
+      : "(unknown — different env context)";
+
+  console.error(`[status] daemon ${envHash} — PID ${pid} — http://${opts.host}:${port}/mcp`);
+  console.error(`[status] config: ${configLabel}`);
 
   const client = new Client({ name: "unimcp-status", version: "1.0.0" });
   try {
