@@ -92,13 +92,20 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       return;
     }
 
-    activeSessions++;
-    cancelShutdown();
+    // Only SSE GET streams indicate a connected client; POST requests are individual tool calls.
+    // Bun does not fire res.on("close"), so we use req.on("close").
+    const isSession = req.method === "GET";
+    if (isSession) {
+      activeSessions++;
+      cancelShutdown();
+    }
 
     let transport: StreamableHTTPServerTransport | null = null;
-    res.on("close", () => {
-      activeSessions--;
-      if (activeSessions === 0) scheduleShutdown();
+    req.on("close", () => {
+      if (isSession) {
+        activeSessions--;
+        if (activeSessions === 0) scheduleShutdown();
+      }
       try { transport?.close(); } catch { /* not yet connected */ }
     });
 

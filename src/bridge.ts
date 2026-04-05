@@ -66,9 +66,9 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   function shutdown(): void {
     if (exiting) return;
     exiting = true;
-    if (client.transport instanceof StreamableHTTPClientTransport) {
-      client.transport.terminateSession().catch(() => {});
-    }
+    // close() aborts the SSE stream so the daemon sees the session close immediately
+    // and can start its idle timer. terminateSession() is best-effort for session cleanup.
+    client.close().catch(() => {});
     process.exit(0);
   }
 
