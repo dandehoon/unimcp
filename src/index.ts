@@ -7,6 +7,7 @@ import { runCollect } from "./collect.js";
 import { DEFAULT_MCP_FILE, computeEnvHash } from "./config.js";
 import { printHelp } from "./help.js";
 import { runStatus } from "./status.js";
+import { runMcp } from "./mcp.js";
 
 const PORT = Number(process.env.UNIMCP_PORT ?? process.env.PORT ?? 4848);
 const HOST = process.env.UNIMCP_HOST ?? process.env.HOST ?? "127.0.0.1";
@@ -56,6 +57,12 @@ async function main() {
 
   if (command === "collect") {
     runCollect(restArgs);
+    return;
+  }
+
+  const MCP_COMMANDS = new Set(["list", "get", "add", "add-json", "remove"]);
+  if (command && MCP_COMMANDS.has(command)) {
+    runMcp([command, ...restArgs], CONFIG_PATH);
     return;
   }
 
