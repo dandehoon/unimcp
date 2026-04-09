@@ -196,40 +196,20 @@ Flags:
 
 ## Install
 
-### Via npm (requires [bun](https://bun.sh))
+Requires [bun](https://bun.sh).
 
 ```bash
 npm install -g @dandehoon/unimcp
-# or
-pnpm add -g @dandehoon/unimcp
+# or: pnpm add -g @dandehoon/unimcp
 ```
 
-### Via npx (no install)
+Or run without installing:
 
 ```bash
 npx @dandehoon/unimcp setup
-npx @dandehoon/unimcp collect
 ```
 
-### Pre-built binary
-
-Download a self-contained binary (no bun or Node.js required) from [GitHub Releases](https://github.com/dandehoon/unimcp/releases):
-
-```bash
-# macOS example — check the releases page for your platform
-curl -L https://github.com/dandehoon/unimcp/releases/latest/download/unimcp-darwin-arm64 -o /usr/local/bin/unimcp
-chmod +x /usr/local/bin/unimcp
-```
-
-### Build from source
-
-Requires [bun](https://bun.sh) and [pnpm](https://pnpm.io):
-
-```bash
-git clone https://github.com/dandehoon/unimcp
-cd unimcp
-pnpm install && pnpm install-bin    # → /usr/local/bin/unimcp
-```
+To build from source, see [Development](#development).
 
 ## Environment variables
 
