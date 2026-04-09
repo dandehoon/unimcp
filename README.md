@@ -7,6 +7,37 @@ A local MCP aggregator that connects to multiple MCP servers and exposes all the
 
 Tool names are prefixed as `serverName__toolName` (e.g. `context7__resolve-library-id`).
 
+> **Prerequisite:** [bun](https://bun.sh) must be installed. The npm package is a thin Node.js launcher that delegates to `bun` for TypeScript execution.
+
+## Quick start
+
+```bash
+# 1. Install bun if you haven't: https://bun.sh
+# 2. Install unimcp globally
+npm install -g @dandehoon/unimcp
+
+# 3. Create a config
+mkdir -p ~/.config/unimcp
+cat > ~/.config/unimcp/mcp.json << 'EOF'
+{
+  "mcpServers": {
+    "context7": { "type": "http", "url": "https://mcp.context7.com/mcp" }
+  }
+}
+EOF
+
+# 4. Register in your editors (from your project directory)
+unimcp setup
+
+# Done. Your editors will now connect to unimcp as a single MCP server.
+```
+
+To try without installing:
+
+```bash
+npx @dandehoon/unimcp --help
+```
+
 ## Install
 
 ### Via npm (requires [bun](https://bun.sh))
@@ -15,6 +46,23 @@ Tool names are prefixed as `serverName__toolName` (e.g. `context7__resolve-libra
 npm install -g @dandehoon/unimcp
 # or
 pnpm add -g @dandehoon/unimcp
+```
+
+### Via npx (no install)
+
+```bash
+npx @dandehoon/unimcp setup
+npx @dandehoon/unimcp collect
+```
+
+### Pre-built binary
+
+Download a self-contained binary (no bun or Node.js required) from [GitHub Releases](https://github.com/dandehoon/unimcp/releases):
+
+```bash
+# macOS example — check the releases page for your platform
+curl -L https://github.com/dandehoon/unimcp/releases/latest/download/unimcp-darwin-arm64 -o /usr/local/bin/unimcp
+chmod +x /usr/local/bin/unimcp
 ```
 
 ### Build from source
@@ -62,7 +110,7 @@ Supported targets:
 
 ## Configuration
 
-Create an `mcp.json` anywhere (default: `~/.config/unimcp/mcp.json`). Override with `--mcp-file` or the `CONFIG` env var:
+Create an `mcp.json` anywhere (default: `~/.config/unimcp/mcp.json`). Override with `--mcp-file` or the `UNIMCP_CONFIG` env var:
 
 ```jsonc
 {
@@ -93,11 +141,13 @@ Create an `mcp.json` anywhere (default: `~/.config/unimcp/mcp.json`). Override w
 }
 ```
 
-Secrets go in `.env` next to `mcp.json` (or set them in your shell environment):
+Secrets go in your shell environment (`.env` files are **not** auto-loaded):
 
 ```bash
-MY_TOKEN=your-token-here
+export MY_TOKEN=your-token-here
 ```
+
+Set these before launching unimcp or add them to your shell profile. `${VAR}` references in `mcp.json` are expanded from the process environment at load time.
 
 ### Per-client tool filtering
 
@@ -165,6 +215,33 @@ Runs the HTTP server directly. Features:
 
 ```bash
 unimcp --http        # or: pnpm http
+```
+
+## Commands
+
+```
+unimcp [command] [flags]
+
+Commands:
+  (default)          Stdio mode — ensures daemon, bridges stdio <-> HTTP
+  --http             Managed HTTP server (daemon mode)
+  --daemon           Alias for --http
+  status             Show running daemon info and loaded tools
+  setup              Register unimcp in editor configs
+  collect            Merge editor MCP configs and print to stdout
+  list               List all servers in mcp.json
+  get <name>         Show details for one server
+  add <name>         Add a server (--command/--url, --type, --args, --env, --header)
+  add-json <name>    Add a server from a JSON string
+  remove <name>      Remove a server
+  help, --help       Show this message
+
+Flags:
+  --mcp-file <path>   Config file (default: ~/.config/unimcp/mcp.json)
+  --global            (setup) Write to user-level editor config files
+  --target <ids>      (setup) Comma-separated: claude,cursor,copilot,opencode
+  -o <path>           (collect) Write output to a file
+  --save              (collect) Write to --mcp-file path
 ```
 
 ## Development
