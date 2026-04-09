@@ -194,8 +194,6 @@ Flags:
 
 ## Install
 
-Requires [bun](https://bun.sh) — the npm package is a thin Node.js launcher that delegates to `bun` for TypeScript execution. If `bun` is not found, it will print install instructions.
-
 ```bash
 npm install -g @dandehoon/unimcp
 # or: pnpm add -g @dandehoon/unimcp
