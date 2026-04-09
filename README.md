@@ -3,20 +3,19 @@
 [![CI](https://github.com/dandehoon/unimcp/actions/workflows/ci.yml/badge.svg)](https://github.com/dandehoon/unimcp/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@dandehoon/unimcp)](https://www.npmjs.com/package/@dandehoon/unimcp)
 
-A local MCP aggregator that connects to multiple MCP servers and exposes all their tools through a **single unified endpoint**.
+One MCP endpoint for all your servers.
 
-Tool names are prefixed as `serverName__toolName` (e.g. `context7__resolve-library-id`).
+Instead of registering Context7, Searxng, your internal API, and a dozen others separately in every editor, you configure them once in `~/.config/unimcp/mcp.json` and point every editor at unimcp. It merges all tools under a single unified endpoint — tool names are prefixed as `serverName__toolName` (e.g. `context7__resolve-library-id`) so collisions are impossible.
 
 > **Prerequisite:** [bun](https://bun.sh) must be installed. The npm package is a thin Node.js launcher that delegates to `bun` for TypeScript execution.
 
 ## Quick start
 
 ```bash
-# 1. Install bun if you haven't: https://bun.sh
-# 2. Install unimcp globally
+# 1. Install
 npm install -g @dandehoon/unimcp
 
-# 3. Create a config
+# 2. Create a config
 mkdir -p ~/.config/unimcp
 cat > ~/.config/unimcp/mcp.json << 'EOF'
 {
@@ -26,11 +25,11 @@ cat > ~/.config/unimcp/mcp.json << 'EOF'
 }
 EOF
 
-# 4. Register in your editors (from your project directory)
+# 3. Register in your editors (run from your project directory)
 unimcp setup
-
-# Done. Your editors will now connect to unimcp as a single MCP server.
 ```
+
+That's it. Your editors will connect to unimcp as a single MCP server. Add more servers to `mcp.json` anytime — changes hot-reload without restarting anything.
 
 To try without installing:
 
@@ -38,79 +37,9 @@ To try without installing:
 npx @dandehoon/unimcp --help
 ```
 
-## Install
-
-### Via npm (requires [bun](https://bun.sh))
-
-```bash
-npm install -g @dandehoon/unimcp
-# or
-pnpm add -g @dandehoon/unimcp
-```
-
-### Via npx (no install)
-
-```bash
-npx @dandehoon/unimcp setup
-npx @dandehoon/unimcp collect
-```
-
-### Pre-built binary
-
-Download a self-contained binary (no bun or Node.js required) from [GitHub Releases](https://github.com/dandehoon/unimcp/releases):
-
-```bash
-# macOS example — check the releases page for your platform
-curl -L https://github.com/dandehoon/unimcp/releases/latest/download/unimcp-darwin-arm64 -o /usr/local/bin/unimcp
-chmod +x /usr/local/bin/unimcp
-```
-
-### Build from source
-
-Requires [bun](https://bun.sh) and [pnpm](https://pnpm.io):
-
-```bash
-git clone https://github.com/dandehoon/unimcp
-cd unimcp
-pnpm install && pnpm install-bin    # → /usr/local/bin/unimcp
-```
-
-## Setup
-
-After installing, register unimcp in your editors.
-
-### Local (project-level) — default
-
-Writes to `.mcp.json` (claude), `.cursor/mcp.json` (cursor), and `.vscode/mcp.json` (copilot) in the current directory:
-
-```bash
-unimcp setup
-# or: pnpm register
-```
-
-### Global (user-level)
-
-Updates existing global editor configs. Only updates configs for editors that already have a config file; use `--target` to force-create:
-
-```bash
-unimcp setup --global
-unimcp setup --global --target claude,copilot   # force-write even if file doesn't exist
-```
-
-Supported targets:
-
-| Target | Local path (cwd) | Global path |
-|--------|-----------------|-------------|
-| `claude` | `.mcp.json` | `~/.claude.json` |
-| `cursor` | `.cursor/mcp.json` | `~/.cursor/mcp.json` |
-| `copilot` | `.vscode/mcp.json` | `~/Library/Application Support/Code/User/mcp.json` |
-| `opencode` | _(none)_ | `~/.config/opencode/opencode.json` |
-
-> Re-running `setup` is safe — already-registered targets are skipped (dedup).
-
 ## Configuration
 
-Create an `mcp.json` anywhere (default: `~/.config/unimcp/mcp.json`). Override with `--mcp-file` or the `UNIMCP_CONFIG` env var:
+The default config file is `~/.config/unimcp/mcp.json`. Override with `--mcp-file` or the `UNIMCP_CONFIG` env var.
 
 ```jsonc
 {
@@ -182,6 +111,36 @@ Client identity is determined by the `UNIMCP_CLIENT` env var, which `unimcp setu
 
 Editors without a matching `clients` entry see all tools (open default).
 
+## Setup
+
+`unimcp setup` writes the registration entry into your editor config files. Re-running is safe — already-registered targets are skipped.
+
+### Local (project-level) — default
+
+Writes to `.mcp.json` (claude), `.cursor/mcp.json` (cursor), and `.vscode/mcp.json` (copilot) in the current directory:
+
+```bash
+unimcp setup
+```
+
+### Global (user-level)
+
+Updates existing global editor configs. Only updates configs for editors that already have a config file; use `--target` to force-create:
+
+```bash
+unimcp setup --global
+unimcp setup --global --target claude,copilot   # force-write even if file doesn't exist
+```
+
+Supported targets:
+
+| Target | Local path (cwd) | Global path |
+|--------|-----------------|-------------|
+| `claude` | `.mcp.json` | `~/.claude.json` |
+| `cursor` | `.cursor/mcp.json` | `~/.cursor/mcp.json` |
+| `copilot` | `.vscode/mcp.json` | `~/Library/Application Support/Code/User/mcp.json` |
+| `opencode` | _(none)_ | `~/.config/opencode/opencode.json` |
+
 ## Collect
 
 Import MCP server configs from all installed editors into your unimcp config:
@@ -202,7 +161,7 @@ Sources read: Claude Code (user scope `~/.claude.json`), Claude Code (project `.
 Auto-starts a shared daemon, then bridges stdin/stdout through it. The daemon is reused across all client connections — upstream processes start only once.
 
 ```bash
-unimcp               # or: pnpm dev
+unimcp
 ```
 
 ### HTTP daemon — `--http`
@@ -214,7 +173,7 @@ Runs the HTTP server directly. Features:
 - **Auto port fallback** — tries port 4848; falls back to an OS-assigned port if in use
 
 ```bash
-unimcp --http        # or: pnpm http
+unimcp --http
 ```
 
 ## Commands
@@ -244,6 +203,52 @@ Flags:
   --save              (collect) Write to --mcp-file path
 ```
 
+## Install
+
+### Via npm (requires [bun](https://bun.sh))
+
+```bash
+npm install -g @dandehoon/unimcp
+# or
+pnpm add -g @dandehoon/unimcp
+```
+
+### Via npx (no install)
+
+```bash
+npx @dandehoon/unimcp setup
+npx @dandehoon/unimcp collect
+```
+
+### Pre-built binary
+
+Download a self-contained binary (no bun or Node.js required) from [GitHub Releases](https://github.com/dandehoon/unimcp/releases):
+
+```bash
+# macOS example — check the releases page for your platform
+curl -L https://github.com/dandehoon/unimcp/releases/latest/download/unimcp-darwin-arm64 -o /usr/local/bin/unimcp
+chmod +x /usr/local/bin/unimcp
+```
+
+### Build from source
+
+Requires [bun](https://bun.sh) and [pnpm](https://pnpm.io):
+
+```bash
+git clone https://github.com/dandehoon/unimcp
+cd unimcp
+pnpm install && pnpm install-bin    # → /usr/local/bin/unimcp
+```
+
+## Environment variables
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `UNIMCP_PORT`   | `4848`      | HTTP server preferred port (also accepts legacy `PORT`)   |
+| `UNIMCP_HOST`   | `127.0.0.1` | HTTP server bind address (also accepts legacy `HOST`)     |
+| `UNIMCP_CONFIG` | `~/.config/unimcp/mcp.json` | Path to server config file — overridden by `--mcp-file` (also accepts legacy `CONFIG`) |
+| `UNIMCP_CLIENT` | _(unset)_ | Client identity sent to daemon as `X-Client-Name` header; used to apply per-client tool filters from the `clients` config section. Set automatically by `unimcp setup`. |
+
 ## Development
 
 ```bash
@@ -254,12 +259,3 @@ pnpm collect         # print merged MCP config from all editors to stdout
 pnpm build           # compile → dist/unimcp
 pnpm install-bin     # build + install to /usr/local/bin/unimcp
 ```
-
-## Environment variables
-
-| Variable | Default     | Description                  |
-| -------- | ----------- | ---------------------------- |
-| `UNIMCP_PORT`   | `4848`      | HTTP server preferred port (also accepts legacy `PORT`)   |
-| `UNIMCP_HOST`   | `127.0.0.1` | HTTP server bind address (also accepts legacy `HOST`)     |
-| `UNIMCP_CONFIG` | `~/.config/unimcp/mcp.json` | Path to server config file — overridden by `--mcp-file` (also accepts legacy `CONFIG`) |
-| `UNIMCP_CLIENT` | _(unset)_ | Client identity sent to daemon as `X-Client-Name` header; used to apply per-client tool filters from the `clients` config section. Set automatically by `unimcp setup`. |
