@@ -19,7 +19,6 @@ const restArgs = args.slice(1);
 const useHttp = args.includes("--http");
 const isDaemon = args.includes("--daemon");
 
-/** Resolves the active mcp file path: --mcp-file flag > CONFIG env > default. */
 function resolveMcpFile(): string {
   const flagIdx = args.indexOf("--mcp-file");
   if (flagIdx !== -1 && args[flagIdx + 1]) return path.resolve(args[flagIdx + 1]);
@@ -38,6 +37,8 @@ function resolveEnvHash(): string {
 }
 
 const ENV_HASH = resolveEnvHash();
+
+const MCP_COMMANDS = new Set(["list", "get", "add", "add-json", "remove"]);
 
 async function main() {
   if (args.includes("--help") || command === "help") {
@@ -60,7 +61,6 @@ async function main() {
     return;
   }
 
-  const MCP_COMMANDS = new Set(["list", "get", "add", "add-json", "remove"]);
   if (command && MCP_COMMANDS.has(command)) {
     runMcp([command, ...restArgs], CONFIG_PATH);
     return;
@@ -77,7 +77,6 @@ async function main() {
     process.exit(1);
   }
 
-  // Default (stdio) mode: ensure daemon is running, then bridge stdio ↔ daemon HTTP.
   const actualPort = await ensureDaemon({ port: PORT, host: HOST, configPath: CONFIG_PATH, envHash: ENV_HASH });
   await runBridge({ port: actualPort, host: HOST, configPath: CONFIG_PATH });
 }

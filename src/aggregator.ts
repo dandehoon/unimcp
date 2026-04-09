@@ -6,7 +6,7 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { minimatch } from "minimatch";
 import { type Config, type ServerConfig, type ToolFilter, isHttpServer } from "./config.js";
 
-const SEP = "__";
+export const SEP = "__";
 const CLIENT_NAME = "unimcp";
 const CLIENT_VERSION = "1.0.0";
 const CONNECT_TIMEOUT_MS = 30_000;
@@ -19,7 +19,7 @@ type UpstreamEntry = {
   filter?: ToolFilter;
 };
 
-export type AggregatedTool = Tool & { upstreamName: string; originalName: string };
+type AggregatedTool = Tool & { upstreamName: string; originalName: string };
 
 export function matchesFilter(toolName: string, filter?: ToolFilter): boolean {
   const include = filter?.include ?? ["*"];
@@ -48,15 +48,14 @@ export class Aggregator {
       console.error(`[${name}] connected (${tools.length} tools)`);
     } catch (err) {
       console.error(`[${name}] failed to connect:`, err);
-      try { await client.close(); } catch { /* already dead */ }
+      try { await client.close(); } catch { }
     }
   }
 
   listTools(clientFilter?: ToolFilter): AggregatedTool[] {
     return this.upstreams.flatMap(({ name, tools, filter }) =>
       tools
-        .filter((t) => matchesFilter(t.name, filter))
-        .filter((t) => matchesFilter(t.name, clientFilter))
+        .filter((t) => matchesFilter(t.name, filter) && matchesFilter(t.name, clientFilter))
         .map((t) => ({
           ...t,
           name: `${name}${SEP}${t.name}`,

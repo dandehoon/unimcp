@@ -1,20 +1,8 @@
-/**
- * mcp subcommand group: manage servers in the unimcp mcp.json config file.
- *
- * Usage:
- *   unimcp mcp list                                  # list all configured servers
- *   unimcp mcp get <name>                            # show details for one server
- *   unimcp mcp add <name> --command <cmd> [flags]    # add a stdio server
- *   unimcp mcp add <name> --type http --url <url>    # add an http server
- *   unimcp mcp add-json <name> '<json>'              # add a server from a JSON string
- *   unimcp mcp remove <name>                         # remove a server
- */
 import { existsSync, writeFileSync, mkdirSync } from "fs";
 import path from "path";
 import { loadConfig, isHttpServer } from "./config.js";
 import type { Config, ServerConfig } from "./config.js";
-
-const out = (s = "") => process.stdout.write(s + "\n");
+import { parseFlagValue } from "./utils.js";
 
 export function runMcp(argv: string[], configPath: string): void {
   const sub = argv[0];
@@ -38,16 +26,16 @@ function cmdList(configPath: string): void {
   const servers = Object.entries(config.mcpServers);
 
   if (servers.length === 0) {
-    out("(no servers configured)");
+    console.error("(no servers configured)");
     return;
   }
 
   for (const [name, srv] of servers) {
     if (isHttpServer(srv)) {
-      out(`${name}  http  ${srv.url}`);
+      console.error(`${name}  http  ${srv.url}`);
     } else {
       const argsPart = srv.args?.length ? `  ${srv.args.join(" ")}` : "";
-      out(`${name}  stdio  ${srv.command}${argsPart}`);
+      console.error(`${name}  stdio  ${srv.command}${argsPart}`);
     }
   }
 }
@@ -66,30 +54,30 @@ function cmdGet(name: string, configPath: string): void {
     process.exit(1);
   }
 
-  out(`name:  ${name}`);
+  console.error(`name:  ${name}`);
 
   if (isHttpServer(srv)) {
-    out(`type:  http`);
-    out(`url:   ${srv.url}`);
+    console.error(`type:  http`);
+    console.error(`url:   ${srv.url}`);
     if (srv.headers && Object.keys(srv.headers).length > 0) {
-      out(`headers:`);
+      console.error(`headers:`);
       for (const [k, v] of Object.entries(srv.headers)) {
-        out(`  ${k}: ${maskValue(k, v)}`);
+        console.error(`  ${k}: ${maskValue(k, v)}`);
       }
     } else {
-      out(`headers: (none)`);
+      console.error(`headers: (none)`);
     }
   } else {
-    out(`type:    stdio`);
-    out(`command: ${srv.command}`);
-    out(`args:    ${srv.args?.length ? srv.args.join(" ") : "(none)"}`);
+    console.error(`type:    stdio`);
+    console.error(`command: ${srv.command}`);
+    console.error(`args:    ${srv.args?.length ? srv.args.join(" ") : "(none)"}`);
     if (srv.env && Object.keys(srv.env).length > 0) {
-      out(`env:`);
+      console.error(`env:`);
       for (const [k, v] of Object.entries(srv.env)) {
-        out(`  ${k}=${maskValue(k, v)}`);
+        console.error(`  ${k}=${maskValue(k, v)}`);
       }
     } else {
-      out(`env:     (none)`);
+      console.error(`env:     (none)`);
     }
   }
 }
@@ -199,13 +187,6 @@ function readConfig(configPath: string): Config {
 function writeConfig(configPath: string, config: Config): void {
   mkdirSync(path.dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
-}
-
-function parseFlagValue(argv: string[], flag: string): string | null {
-  const idx = argv.indexOf(flag);
-  if (idx !== -1) return argv[idx + 1] ?? null;
-  const inline = argv.find((a) => a.startsWith(flag + "="));
-  return inline ? inline.slice(flag.length + 1) : null;
 }
 
 function parseRepeatedFlag(argv: string[], flag: string): string[] {

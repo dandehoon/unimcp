@@ -1,10 +1,4 @@
-/**
- * Daemon management: ensures a single background HTTP server is running.
- * Uses a pid file (.mcp.pid) storing "<pid>:<port>" and an HTTP health check
- * to detect an existing instance. Spawns a detached child if none found.
- * Falls back to an OS-assigned port automatically (handled by server.ts).
- */
-import { existsSync, readFileSync, unlinkSync } from "fs";
+import { readFileSync, unlinkSync } from "fs";
 import { spawn } from "child_process";
 import path from "path";
 import { CONFIG_DIR } from "./server.js";
@@ -15,7 +9,7 @@ const SPAWN_WAIT_S = SPAWN_WAIT_MS / 1_000;
 const POLL_INTERVAL_MS = 300;
 
 export type DaemonOptions = {
-  port: number; // preferred port; actual port may differ (auto-assigned)
+  port: number;
   host: string;
   configPath: string;
   envHash: string;
@@ -26,10 +20,6 @@ type DaemonInfo = {
   port: number;
 };
 
-/**
- * Ensures a daemon is running.
- * Returns the actual port the daemon is listening on.
- */
 export async function ensureDaemon(opts: DaemonOptions): Promise<number> {
   const running = await runningDaemon(opts.envHash, opts.host);
   if (running) {
@@ -41,11 +31,8 @@ export async function ensureDaemon(opts: DaemonOptions): Promise<number> {
 
 // --- helpers ---
 
-/** Reads pid file; returns DaemonInfo if process is alive and healthy, else null. */
 async function runningDaemon(envHash: string, host: string): Promise<DaemonInfo | null> {
-  const pidFile = path.join(CONFIG_DIR, `daemon.${envHash}.pid`);
-  if (!existsSync(pidFile)) return null;
-
+  const pidFile = pidFilePath(envHash);
   const info = parsePidFile(pidFile);
   if (!info) return null;
 
@@ -63,7 +50,6 @@ async function runningDaemon(envHash: string, host: string): Promise<DaemonInfo 
   return info;
 }
 
-/** Starts the daemon in the background; waits until it writes its pid file and is healthy. */
 async function startDaemon(opts: DaemonOptions): Promise<number> {
   const execPath = process.execPath;
   const scriptArg = process.argv[1] ?? "";
@@ -86,15 +72,13 @@ async function startDaemon(opts: DaemonOptions): Promise<number> {
 
   console.error(`[daemon] spawned PID ${pid} — waiting for health check…`);
 
-  // Wait for server.ts to write the pid:port file and respond to /health.
   const port = await waitForDaemon(opts.envHash, opts.host);
   console.error(`[daemon] ready on http://${opts.host}:${port}/mcp`);
   return port;
 }
 
-/** Polls until the pid file contains a valid pid:port and /health responds OK. */
 async function waitForDaemon(envHash: string, host: string): Promise<number> {
-  const pidFile = path.join(CONFIG_DIR, `daemon.${envHash}.pid`);
+  const pidFile = pidFilePath(envHash);
   const deadline = Date.now() + SPAWN_WAIT_MS;
   while (Date.now() < deadline) {
     const info = parsePidFile(pidFile);
@@ -107,8 +91,12 @@ async function waitForDaemon(envHash: string, host: string): Promise<number> {
 }
 
 function parsePidFile(pidFile: string): DaemonInfo | null {
-  if (!existsSync(pidFile)) return null;
-  const content = readFileSync(pidFile, "utf-8").trim();
+  let content: string;
+  try {
+    content = readFileSync(pidFile, "utf-8").trim();
+  } catch {
+    return null;
+  }
   const [pidStr, portStr] = content.split(":");
   const pid = Number(pidStr);
   const port = Number(portStr);
@@ -142,4 +130,8 @@ function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function pidFilePath(envHash: string): string {
+  return path.join(CONFIG_DIR, `daemon.${envHash}.pid`);
 }

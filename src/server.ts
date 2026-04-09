@@ -1,10 +1,3 @@
-/**
- * Managed HTTP MCP server.
- * - Tries preferred port; falls back to OS-assigned port if in use.
- * - Writes "<pid>:<port>" to daemon.<envHash>.pid once bound so the bridge can find us.
- * - Tracks active sessions; auto-terminates after 30 s of idle.
- * - Watches mcp.json with chokidar; hot-reloads aggregator on change.
- */
 import http from "http";
 import { writeFileSync, mkdirSync, unlinkSync } from "fs";
 import path from "path";
@@ -23,6 +16,7 @@ import { Aggregator } from "./aggregator.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
 const READY_TIMEOUT_MS = 60_000;
+const FORCE_EXIT_TIMEOUT_MS = 5_000;
 export const CONFIG_DIR = path.join(os.homedir(), ".config", "unimcp");
 export type ManagedServerOptions = {
   port: number;
@@ -68,9 +62,9 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     if (idleTimer) return;
     idleTimer = setTimeout(() => {
       console.error("[server] no active sessions for 30 s — shutting down");
-      try { unlinkSync(pidFile); } catch { /* already gone */ }
+      tryUnlink(pidFile);
       aggregator?.disconnect().catch(() => {}).finally(() => process.exit(0));
-      setTimeout(() => process.exit(0), 5_000).unref();
+      setTimeout(() => process.exit(0), FORCE_EXIT_TIMEOUT_MS).unref();
     }, IDLE_TIMEOUT_MS);
   }
 
@@ -137,14 +131,12 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     await transport.handleRequest(req, res);
   });
 
-  // Start listening FIRST so /health is reachable before upstream connections.
   const boundPort = await listenWithFallback(httpServer, opts.port, opts.host);
 
   mkdirSync(CONFIG_DIR, { recursive: true });
   writeFileSync(pidFile, `${process.pid}:${boundPort}`, "utf-8");
   console.error(`[server] listening on http://${opts.host}:${boundPort}/mcp`);
 
-  // Connect to upstreams AFTER server is listening.
   let initializing = true;
   try {
     const initial = await buildAggregator(opts.configPath);
@@ -159,7 +151,6 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     if (activeSessions === 0) scheduleShutdown();
   }
 
-  // Hot-reload on config change or creation
   let isReloading = false;
   const handleReload = async () => {
     if (isReloading || initializing) return;
@@ -190,7 +181,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     if (isShuttingDown) return;
     isShuttingDown = true;
     console.error(`[server] ${signal} — shutting down`);
-    try { unlinkSync(pidFile); } catch { /* already gone */ }
+    tryUnlink(pidFile);
     await aggregator?.disconnect();
     await watcher?.close();
     httpServer.close();
@@ -208,7 +199,6 @@ async function buildAggregator(configPath: string): Promise<{ aggregator: Aggreg
   return { aggregator, config };
 }
 
-/** Tries to listen on preferredPort; if EADDRINUSE, falls back to port 0 (OS-assigned). */
 function listenWithFallback(
   server: http.Server,
   preferredPort: number,
@@ -230,4 +220,8 @@ function listenWithFallback(
       });
     });
   });
+}
+
+function tryUnlink(filePath: string): void {
+  try { unlinkSync(filePath); } catch { /* already gone */ }
 }

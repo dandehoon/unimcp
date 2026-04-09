@@ -1,5 +1,5 @@
 export function printHelp(): void {
-  process.stdout.write(`Usage: unimcp [command] [flags]
+  process.stderr.write(`Usage: unimcp [command] [flags]
 
 Commands:
   (default)          Start in stdio mode — ensures daemon, then bridges stdio ↔ HTTP

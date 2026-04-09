@@ -5,6 +5,8 @@ import os from "os";
 
 export const DEFAULT_MCP_FILE = path.join(os.homedir(), ".config", "unimcp", "mcp.json");
 
+const ENV_VAR_RE = /\$\{(\w+)\}/g;
+
 export type ToolFilter = {
   include?: string[]; // glob patterns — defaults to ["*"] (all)
   exclude?: string[]; // glob patterns — defaults to [] (none)
@@ -41,8 +43,7 @@ export function isHttpServer(s: ServerConfig): s is HttpServer {
 
 export function loadConfig(filePath: string): Config {
   const raw = readFileSync(filePath, "utf-8");
-  // Expand env vars in the form ${VAR}
-  const expanded = raw.replace(/\$\{(\w+)\}/g, (_match: string, name: string) => process.env[name] ?? "");
+  const expanded = raw.replace(ENV_VAR_RE, (_match: string, name: string) => process.env[name] ?? "");
   return JSON.parse(expanded) as Config;
 }
 
@@ -51,10 +52,9 @@ export function computeEnvHash(filePath: string): string {
   try {
     content = readFileSync(filePath, "utf-8");
   } catch {
-    // file does not exist or cannot be read — use empty string
   }
   const varNames = new Set<string>();
-  for (const match of content.matchAll(/\$\{(\w+)\}/g)) {
+  for (const match of content.matchAll(ENV_VAR_RE)) {
     varNames.add(match[1]);
   }
   const record = Object.fromEntries(

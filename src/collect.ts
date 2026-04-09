@@ -1,27 +1,17 @@
-/**
- * Collect command: reads MCP server configs from all known tool config files
- * and merges them into a single unimcp-compatible mcpServers object.
- *
- * Usage:
- *   unimcp collect                # print merged config to stdout
- *   unimcp collect -o out.json    # write to file
- *   unimcp collect --save         # write to ~/.config/unimcp/mcp.json (default mcp-file)
- *   unimcp collect --save --mcp-file /path/to/mcp.json
- */
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import path from "path";
 import os from "os";
 import type { ServerConfig } from "./config.js";
 import { DEFAULT_MCP_FILE } from "./config.js";
-import { stripJsonComments } from "./utils.js";
+import { stripJsonComments, parseFlagValue } from "./utils.js";
 
 const HOME = os.homedir();
 const CWD = process.cwd();
 
 type CollectOptions = {
-  outputPath: string | null;   // -o / --output
-  save: boolean;               // --save → write to mcp-file
-  mcpFilePath: string;         // --mcp-file or default
+  outputPath: string | null;
+  save: boolean;
+  mcpFilePath: string;
 };
 
 // --- source definitions ---
@@ -39,8 +29,8 @@ export function runCollect(argv: string[]): void {
   const opts = parseCollectArgs(argv);
 
   const sources: SourceDef[] = [
-    { label: "Claude Code (user)",    read: readClaudeCodeUser },
-    { label: "Claude Code (project)", read: readClaudeCodeProject },
+    { label: "Claude Code (user)",    read: () => readMcpServersFile(path.join(HOME, ".claude.json")) },
+    { label: "Claude Code (project)", read: () => readMcpServersFile(path.join(CWD, ".mcp.json")) },
     { label: "Cursor (global)",       read: () => readMcpServersFile(path.join(HOME, ".cursor", "mcp.json")) },
     { label: "VS Code / Copilot",     read: readVsCodeGlobal },
     { label: "OpenCode",              read: readOpenCode },
@@ -59,42 +49,35 @@ export function runCollect(argv: string[]): void {
 
   const output = { mcpServers: merged };
   const json = JSON.stringify(output, null, 2) + "\n";
+  const count = Object.keys(merged).length;
 
   if (opts.save) {
-    const dest = opts.mcpFilePath;
-    mkdirSync(path.dirname(dest), { recursive: true });
-    writeFileSync(dest, json, "utf-8");
-    console.error(`[collect] saved ${Object.keys(merged).length} server(s) to ${dest}`);
+    writeJson(opts.mcpFilePath, json);
+    console.error(`[collect] saved ${count} server(s) to ${opts.mcpFilePath}`);
     return;
   }
 
   if (opts.outputPath) {
-    mkdirSync(path.dirname(opts.outputPath), { recursive: true });
-    writeFileSync(opts.outputPath, json, "utf-8");
-    console.error(`[collect] wrote ${Object.keys(merged).length} server(s) to ${opts.outputPath}`);
+    writeJson(opts.outputPath, json);
+    console.error(`[collect] wrote ${count} server(s) to ${opts.outputPath}`);
     return;
   }
 
-  // Default: print to stdout
   process.stdout.write(json);
 }
 
 // --- helpers ---
+
+function writeJson(filePath: string, content: string): void {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, content, "utf-8");
+}
 
 function parseCollectArgs(argv: string[]): CollectOptions {
   const save = argv.includes("--save");
   const mcpFilePath = parseFlagValue(argv, "--mcp-file") ?? DEFAULT_MCP_FILE;
   const outputPath = parseFlagValue(argv, "-o") ?? parseFlagValue(argv, "--output");
   return { save, mcpFilePath, outputPath };
-}
-
-function parseFlagValue(argv: string[], flag: string): string | null {
-  const idx = argv.indexOf(flag);
-  if (idx === -1) {
-    const inline = argv.find((a) => a.startsWith(flag + "="));
-    return inline ? inline.slice(flag.length + 1) : null;
-  }
-  return argv[idx + 1] ?? null;
 }
 
 /** Reads a plain {"mcpServers": {...}} file. Returns {} on missing/invalid. */
@@ -110,17 +93,6 @@ function readMcpServersFile(filePath: string): Record<string, ServerConfig> {
   }
 }
 
-/** Reads ~/.claude.json top-level mcpServers (Claude Code user scope). */
-function readClaudeCodeUser(): Record<string, ServerConfig> {
-  return readMcpServersFile(path.join(HOME, ".claude.json"));
-}
-
-/** Reads .mcp.json in cwd (Claude Code project scope). */
-function readClaudeCodeProject(): Record<string, ServerConfig> {
-  return readMcpServersFile(path.join(CWD, ".mcp.json"));
-}
-
-/** Reads VS Code Copilot global mcp.json (JSONC format). */
 function readVsCodeGlobal(): Record<string, ServerConfig> {
   const filePath = path.join(HOME, "Library", "Application Support", "Code", "User", "mcp.json");
   if (!existsSync(filePath)) return {};
@@ -128,7 +100,6 @@ function readVsCodeGlobal(): Record<string, ServerConfig> {
     const raw = readFileSync(filePath, "utf-8");
     const stripped = stripJsonComments(raw);
     const config = JSON.parse(stripped) as Record<string, unknown>;
-    // VS Code uses "servers" key; remap to ServerConfig shape
     const servers = (config["servers"] ?? {}) as Record<string, Record<string, unknown>>;
     const result: Record<string, ServerConfig> = {};
     for (const [name, srv] of Object.entries(servers)) {
@@ -143,7 +114,6 @@ function readVsCodeGlobal(): Record<string, ServerConfig> {
   }
 }
 
-/** Reads OpenCode mcp section and maps to ServerConfig shape. */
 function readOpenCode(): Record<string, ServerConfig> {
   const filePath = path.join(HOME, ".config", "opencode", "opencode.json");
   if (!existsSync(filePath)) return {};
@@ -153,7 +123,7 @@ function readOpenCode(): Record<string, ServerConfig> {
     const mcp = (config["mcp"] ?? {}) as Record<string, Record<string, unknown>>;
     const result: Record<string, ServerConfig> = {};
     for (const [name, srv] of Object.entries(mcp)) {
-      if (!srv["enabled"]) continue; // skip disabled servers
+      if (!srv["enabled"]) continue;
       const cmd = srv["command"];
       if (Array.isArray(cmd) && cmd.length > 0) {
         result[name] = { command: String(cmd[0]), args: cmd.slice(1).map(String) } as ServerConfig;

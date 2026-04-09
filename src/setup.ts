@@ -1,18 +1,3 @@
-/**
- * Setup command: registers unimcp as an MCP server in supported editors.
- *
- * Modes:
- *   unimcp setup              # local: write project-level config files in cwd
- *   unimcp setup --global     # global: update existing user-level configs only (no new files)
- *   unimcp setup --target claude,copilot           # local for those targets
- *   unimcp setup --global --target claude,copilot  # global, forced even if file doesn't exist
- *
- * Supported targets:
- *   claude  local  → .mcp.json in cwd          global → ~/.claude.json (mcpServers key)
- *   cursor       local  → .cursor/mcp.json           global → ~/.cursor/mcp.json
- *   copilot      local  → .vscode/mcp.json           global → ~/Library/.../Code/User/mcp.json
- *   opencode     global only → ~/.config/opencode/opencode.json
- */
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "fs";
 import path from "path";
 import os from "os";
@@ -31,45 +16,38 @@ type TargetDef = {
   id: TargetId;
   label: string;
   globalConfigPath: string;
-  localConfigPath: string | null; // null = no project-level equivalent
-  injectGlobal: (raw: string, binPath: string, clientId: string) => string;
-  injectLocal: (raw: string, binPath: string, clientId: string) => string;
+  localConfigPath: string | null;
+  inject: (raw: string, binPath: string, clientId: string) => string;
 };
 
 const TARGETS: TargetDef[] = [
   {
     id: "claude",
     label: "Claude Code",
-    // user scope: ~/.claude.json top-level mcpServers
     globalConfigPath: path.join(HOME, ".claude.json"),
-    // project scope: .mcp.json in cwd (committed to git, shared with team)
     localConfigPath: path.join(CWD, ".mcp.json"),
-    injectGlobal: injectMcpServers,
-    injectLocal: injectMcpServers,
+    inject: injectMcpServers,
   },
   {
     id: "cursor",
     label: "Cursor",
     globalConfigPath: path.join(HOME, ".cursor", "mcp.json"),
     localConfigPath: path.join(CWD, ".cursor", "mcp.json"),
-    injectGlobal: injectMcpServers,
-    injectLocal: injectMcpServers,
+    inject: injectMcpServers,
   },
   {
     id: "copilot",
     label: "VS Code / GitHub Copilot",
     globalConfigPath: path.join(HOME, "Library", "Application Support", "Code", "User", "mcp.json"),
     localConfigPath: path.join(CWD, ".vscode", "mcp.json"),
-    injectGlobal: injectVsCodeServers,
-    injectLocal: injectVsCodeServers,
+    inject: injectVsCodeServers,
   },
   {
     id: "opencode",
     label: "OpenCode",
     globalConfigPath: path.join(HOME, ".config", "opencode", "opencode.json"),
-    localConfigPath: null, // OpenCode has no project-level config
-    injectGlobal: injectOpenCode,
-    injectLocal: injectOpenCode,
+    localConfigPath: null,
+    inject: injectOpenCode,
   },
 ];
 
@@ -79,7 +57,7 @@ export async function runSetup(argv: string[]): Promise<void> {
   const binPath = resolveUnimcpBin();
   const isGlobal = argv.includes("--global");
   const targetFilter = parseTargetFlag(argv);
-  const forceWrite = targetFilter !== null; // explicit --target always writes
+  const forceWrite = targetFilter !== null;
 
   const targets = TARGETS.filter((t) => targetFilter === null || targetFilter.includes(t.id));
 
@@ -101,7 +79,7 @@ function registerLocal(targets: TargetDef[], binPath: string): void {
   }
 
   for (const target of localTargets) {
-    registerTarget(target.label, target.localConfigPath!, binPath, target.injectLocal, target.id, true);
+    registerTarget(target.label, target.localConfigPath!, binPath, target.inject, target.id);
   }
 }
 
@@ -110,14 +88,13 @@ function registerGlobal(targets: TargetDef[], binPath: string, force: boolean): 
 
   for (const target of targets) {
     const configPath = target.globalConfigPath;
-    const fileExists = existsSync(configPath);
 
-    if (!force && !fileExists) {
+    if (!force && !existsSync(configPath)) {
       console.error(`[setup] ${target.label}: config not found — skipped (use --target to force)`);
       continue;
     }
 
-    registerTarget(target.label, configPath, binPath, target.injectGlobal, target.id, true);
+    registerTarget(target.label, configPath, binPath, target.inject, target.id);
     registered++;
   }
 
@@ -132,13 +109,9 @@ function registerTarget(
   binPath: string,
   inject: (raw: string, binPath: string, clientId: string) => string,
   clientId: string,
-  createIfMissing: boolean
 ): void {
   const fileExists = existsSync(configPath);
-  if (!fileExists && !createIfMissing) return;
-
-  const dir = path.dirname(configPath);
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(path.dirname(configPath), { recursive: true });
 
   const existing = fileExists ? readFileSync(configPath, "utf-8") : "";
   const updated = inject(existing, binPath, clientId);
@@ -167,25 +140,23 @@ function parseTargetFlag(argv: string[]): TargetId[] | null {
   return raw.split(",").map((s) => s.trim()) as TargetId[];
 }
 
-/** Injects into {"mcpServers": {...}} format (Claude Code project/global scope, Cursor). */
 export function injectMcpServers(raw: string, binPath: string, clientId: string): string {
   const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
   const servers = (config["mcpServers"] ?? {}) as Record<string, unknown>;
 
-  if (servers[SERVER_NAME]) return raw; // dedup
+  if (servers[SERVER_NAME]) return raw;
 
   servers[SERVER_NAME] = { command: binPath, env: { UNIMCP_CLIENT: clientId } };
   config["mcpServers"] = servers;
   return JSON.stringify(config, null, 2) + "\n";
 }
 
-/** Injects into {"servers": {...}} format (VS Code / GitHub Copilot). */
 export function injectVsCodeServers(raw: string, binPath: string, clientId: string): string {
   const stripped = stripJsonComments(raw);
   const config = stripped.trim() ? (JSON.parse(stripped) as Record<string, unknown>) : {};
   const servers = (config["servers"] ?? {}) as Record<string, unknown>;
 
-  if (servers[SERVER_NAME]) return raw; // dedup
+  if (servers[SERVER_NAME]) return raw;
 
   servers[SERVER_NAME] = { type: "stdio", command: binPath, args: [], env: { UNIMCP_CLIENT: clientId } };
   config["servers"] = servers;
@@ -193,12 +164,11 @@ export function injectVsCodeServers(raw: string, binPath: string, clientId: stri
   return JSON.stringify(config, null, 2) + "\n";
 }
 
-/** Injects into {"mcp": {...}} format (OpenCode). */
 export function injectOpenCode(raw: string, binPath: string, clientId: string): string {
   const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
   const mcp = (config["mcp"] ?? {}) as Record<string, unknown>;
 
-  if (mcp[SERVER_NAME]) return raw; // dedup
+  if (mcp[SERVER_NAME]) return raw;
 
   mcp[SERVER_NAME] = { type: "local", command: [binPath], enabled: true, env: { UNIMCP_CLIENT: clientId } };
   config["mcp"] = mcp;

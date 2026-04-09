@@ -1,9 +1,3 @@
-/**
- * Stdio ↔ HTTP bridge.
- * Connects to the background daemon via StreamableHTTPClientTransport and
- * pipes the MCP stdio transport through it, so that Claude Desktop or opencode
- * can talk to the aggregator without launching upstream processes themselves.
- */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -16,8 +10,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig } from "./config.js";
-
-const SEP = "__";
+import { SEP } from "./aggregator.js";
 
 export type BridgeOptions = {
   port: number;
@@ -58,7 +51,7 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
     try {
       return await client.callTool({ name, arguments: args ?? {} });
     } catch (err) {
-      // Preserve daemon error codes (e.g. InvalidParams) rather than flattening to InternalError.
+      // Preserve upstream error codes (e.g. InvalidParams) rather than flattening to InternalError.
       if (err instanceof McpError) throw err;
       throw new McpError(ErrorCode.InternalError, `[bridge] callTool failed: ${String(err)}`);
     }
@@ -72,8 +65,6 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   function shutdown(): void {
     if (exiting) return;
     exiting = true;
-    // close() aborts the SSE stream so the daemon sees the session close immediately
-    // and can start its idle timer. terminateSession() is best-effort for session cleanup.
     client.close().catch(() => {});
     process.exit(0);
   }
@@ -85,25 +76,21 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
 
 // --- helpers ---
 
-/** Logs per-upstream connection status so users can spot failed upstreams without reading daemon logs. */
 function logConnectionStatus(tools: Tool[], configPath: string): void {
   let configuredNames: string[] = [];
   try {
     const config = loadConfig(configPath);
     configuredNames = Object.keys(config.mcpServers);
   } catch {
-    // config unreadable — fall back to simple count
     console.error(`[bridge] connected to daemon — ${tools.length} tools available`);
     return;
   }
 
-  const connectedNames = new Set(tools.map((t) => t.name.slice(0, t.name.indexOf(SEP))).filter(Boolean));
-  const failed = configuredNames.filter((n) => !connectedNames.has(n));
-
-  const parts = configuredNames.map((n) =>
-    connectedNames.has(n) ? `${n}: ok` : `${n}: no tools`
+  const connectedNames = new Set(
+    tools.map((t) => t.name.slice(0, t.name.indexOf(SEP))).filter(Boolean)
   );
-
+  const failed = configuredNames.filter((n) => !connectedNames.has(n));
+  const parts = configuredNames.map((n) => (connectedNames.has(n) ? `${n}: ok` : `${n}: no tools`));
   const suffix = failed.length > 0 ? ` ⚠ ${failed.length} upstream(s) unavailable` : "";
   console.error(`[bridge] connected to daemon — ${tools.length} tools (${parts.join(", ")})${suffix}`);
 }

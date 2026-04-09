@@ -1,7 +1,10 @@
-/**
- * Strips // line comments and /* block comments from JSONC input,
- * respecting quoted string boundaries.
- */
+export function parseFlagValue(argv: string[], flag: string): string | null {
+  const idx = argv.indexOf(flag);
+  if (idx !== -1) return argv[idx + 1] ?? null;
+  const inline = argv.find((a) => a.startsWith(flag + "="));
+  return inline ? inline.slice(flag.length + 1) : null;
+}
+
 export function stripJsonComments(raw: string): string {
   let result = "";
   let i = 0;
