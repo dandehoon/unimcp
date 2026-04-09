@@ -58,7 +58,7 @@ function cmdGet(name: string, configPath: string): void {
 
   if (isHttpServer(srv)) {
     console.error(`type:  http`);
-    console.error(`url:   ${srv.url}`);
+    console.error(`url:   ${maskUrl(srv.url)}`);
     if (srv.headers && Object.keys(srv.headers).length > 0) {
       console.error(`headers:`);
       for (const [k, v] of Object.entries(srv.headers)) {
@@ -216,4 +216,18 @@ const SECRET_KEYWORDS = ["key", "token", "secret", "auth", "bearer", "password"]
 function maskValue(key: string, value: string): string {
   const lower = key.toLowerCase();
   return SECRET_KEYWORDS.some((kw) => lower.includes(kw)) ? "***" : value;
+}
+
+function maskUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    for (const [k] of u.searchParams) {
+      if (SECRET_KEYWORDS.some((kw) => k.toLowerCase().includes(kw))) {
+        u.searchParams.set(k, "***");
+      }
+    }
+    return u.toString();
+  } catch {
+    return raw;
+  }
 }

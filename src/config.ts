@@ -1,7 +1,9 @@
 import { createHash } from "crypto";
-import { readFileSync } from "fs";
+import { readFileSync, statSync } from "fs";
 import path from "path";
 import os from "os";
+
+const MAX_CONFIG_BYTES = 1_048_576; // 1 MB
 
 export const DEFAULT_MCP_FILE = path.join(os.homedir(), ".config", "unimcp", "mcp.json");
 
@@ -42,6 +44,7 @@ export function isHttpServer(s: ServerConfig): s is HttpServer {
 }
 
 export function loadConfig(filePath: string): Config {
+  guardFileSize(filePath);
   const raw = readFileSync(filePath, "utf-8");
   const expanded = raw.replace(ENV_VAR_RE, (_match: string, name: string) => process.env[name] ?? "");
   return JSON.parse(expanded) as Config;
@@ -50,6 +53,7 @@ export function loadConfig(filePath: string): Config {
 export function computeEnvHash(filePath: string): string {
   let content = "";
   try {
+    guardFileSize(filePath);
     content = readFileSync(filePath, "utf-8");
   } catch {
   }
@@ -61,4 +65,13 @@ export function computeEnvHash(filePath: string): string {
     [...varNames].sort().map((name) => [name, process.env[name] ?? ""]),
   );
   return createHash("sha256").update(JSON.stringify(record)).digest("hex").slice(0, 8);
+}
+
+// --- helpers ---
+
+function guardFileSize(filePath: string): void {
+  const stat = statSync(filePath);
+  if (stat.size > MAX_CONFIG_BYTES) {
+    throw new Error(`Config file too large (${stat.size} bytes; max ${MAX_CONFIG_BYTES}): ${filePath}`);
+  }
 }

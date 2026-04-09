@@ -111,7 +111,7 @@ function registerTarget(
   clientId: string,
 ): void {
   const fileExists = existsSync(configPath);
-  mkdirSync(path.dirname(configPath), { recursive: true });
+  mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o755 });
 
   const existing = fileExists ? readFileSync(configPath, "utf-8") : "";
   const updated = inject(existing, binPath, clientId);
@@ -121,7 +121,7 @@ function registerTarget(
     return;
   }
 
-  writeFileSync(configPath, updated, "utf-8");
+  writeFileSync(configPath, updated, { encoding: "utf-8", mode: 0o644 });
   console.error(`[setup] ${label}: registered at ${configPath}`);
 }
 

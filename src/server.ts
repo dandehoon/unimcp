@@ -133,8 +133,8 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
 
   const boundPort = await listenWithFallback(httpServer, opts.port, opts.host);
 
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(pidFile, `${process.pid}:${boundPort}`, "utf-8");
+  mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  writeFileSync(pidFile, `${process.pid}:${boundPort}`, { encoding: "utf-8", mode: 0o600 });
   console.error(`[server] listening on http://${opts.host}:${boundPort}/mcp`);
 
   let initializing = true;
@@ -143,7 +143,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     aggregator = initial.aggregator;
     config = initial.config;
   } catch (err) {
-    console.error("[server] initial aggregator build failed:", err);
+    console.error("[server] initial aggregator build failed:", String(err));
     console.error("[server] running with 0 tools — fix config and it will hot-reload");
   } finally {
     initializing = false;
@@ -166,7 +166,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       console.error(`[server] reloaded — ${aggregator.listTools().length} tools`);
       await old?.disconnect();
     } catch (err) {
-      console.error("[server] reload failed:", err);
+      console.error("[server] reload failed:", String(err));
     } finally {
       isReloading = false;
     }

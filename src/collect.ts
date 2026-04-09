@@ -52,13 +52,13 @@ export function runCollect(argv: string[]): void {
   const count = Object.keys(merged).length;
 
   if (opts.save) {
-    writeJson(opts.mcpFilePath, json);
+    writeJson(opts.mcpFilePath, json, { dirMode: 0o700, fileMode: 0o600 });
     console.error(`[collect] saved ${count} server(s) to ${opts.mcpFilePath}`);
     return;
   }
 
   if (opts.outputPath) {
-    writeJson(opts.outputPath, json);
+    writeJson(opts.outputPath, json, { dirMode: 0o755, fileMode: 0o644 });
     console.error(`[collect] wrote ${count} server(s) to ${opts.outputPath}`);
     return;
   }
@@ -68,9 +68,11 @@ export function runCollect(argv: string[]): void {
 
 // --- helpers ---
 
-function writeJson(filePath: string, content: string): void {
-  mkdirSync(path.dirname(filePath), { recursive: true });
-  writeFileSync(filePath, content, "utf-8");
+type WriteJsonOpts = { dirMode: number; fileMode: number };
+
+function writeJson(filePath: string, content: string, modes: WriteJsonOpts): void {
+  mkdirSync(path.dirname(filePath), { recursive: true, mode: modes.dirMode });
+  writeFileSync(filePath, content, { encoding: "utf-8", mode: modes.fileMode });
 }
 
 function parseCollectArgs(argv: string[]): CollectOptions {

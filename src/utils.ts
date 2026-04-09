@@ -27,7 +27,7 @@ export function stripJsonComments(raw: string): string {
     if (raw[i] === "/" && raw[i + 1] === "*") {
       i += 2;
       while (i < raw.length && !(raw[i] === "*" && raw[i + 1] === "/")) i++;
-      i += 2;
+      if (i < raw.length) i += 2;
       continue;
     }
     result += raw[i++];

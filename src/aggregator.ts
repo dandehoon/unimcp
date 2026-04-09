@@ -38,6 +38,10 @@ export class Aggregator {
   }
 
   private async connectOne(name: string, srv: ServerConfig): Promise<void> {
+    if (name.includes(SEP)) {
+      console.error(`[${name}] server name must not contain "${SEP}" — skipped`);
+      return;
+    }
     const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
     const transport = buildTransport(srv);
 
