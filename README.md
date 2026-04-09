@@ -41,26 +41,22 @@ npx @dandehoon/unimcp --help
 
 The default config file is `~/.config/unimcp/mcp.json`. Override with `--mcp-file` or the `UNIMCP_CONFIG` env var.
 
-```jsonc
+```json
 {
   "mcpServers": {
-    // HTTP server
     "context7": {
       "type": "http",
       "url": "https://mcp.context7.com/mcp"
     },
-    // stdio server (e.g. via Docker)
     "searxng": {
       "command": "docker",
       "args": ["run", "-i", "--rm", "dandehoon/searxng-mcp:edge"]
     },
-    // HTTP server with auth header (env vars expanded via ${VAR})
     "my-api": {
       "type": "http",
       "url": "https://example.com/mcp",
       "headers": { "Authorization": "Bearer ${MY_TOKEN}" }
     },
-    // Limit which tools are exposed from this server (glob patterns)
     "big-server": {
       "type": "http",
       "url": "https://big.example.com/mcp",
@@ -82,7 +78,7 @@ Set these before launching unimcp or add them to your shell profile. `${VAR}` re
 
 Use the `clients` section to control which tools each editor sees. Filters use the same glob patterns as per-server `tools` filters, applied on top of them:
 
-```jsonc
+```json
 {
   "mcpServers": {
     "searxng": { "command": "docker", "args": ["run", "-i", "--rm", "dandehoon/searxng-mcp:edge"] },
@@ -90,11 +86,8 @@ Use the `clients` section to control which tools each editor sees. Filters use t
     "context7": { "type": "http", "url": "https://mcp.context7.com/mcp" }
   },
   "clients": {
-    // Claude Code has its own web search — hide searxng
     "claude":   { "tools": { "exclude": ["searxng__*"] } },
-    // VS Code Copilot has built-in fetch and search — hide both
     "copilot":  { "tools": { "exclude": ["searxng__*", "fetch__*"] } },
-    // OpenCode gets everything
     "opencode": { "tools": { "include": ["*"] } }
   }
 }
