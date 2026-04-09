@@ -10,7 +10,8 @@
     "src/",
     "bin/",
     "dist/unimcp.js",
-    "README.md"
+    "README.md",
+    "SECURITY.md"
   ],
   "scripts": {
     "test": "bun test tests/",
