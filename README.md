@@ -7,8 +7,6 @@ One MCP endpoint for all your servers.
 
 Instead of registering Context7, Searxng, your internal API, and a dozen others separately in every editor, you configure them once in `~/.config/unimcp/mcp.json` and point every editor at unimcp. It merges all tools under a single unified endpoint — tool names are prefixed as `serverName__toolName` (e.g. `context7__resolve-library-id`) so collisions are impossible.
 
-> **Prerequisite:** [bun](https://bun.sh) must be installed. The npm package is a thin Node.js launcher that delegates to `bun` for TypeScript execution.
-
 ## Quick start
 
 ```bash
@@ -196,7 +194,7 @@ Flags:
 
 ## Install
 
-Requires [bun](https://bun.sh).
+Requires [bun](https://bun.sh) — the npm package is a thin Node.js launcher that delegates to `bun` for TypeScript execution. If `bun` is not found, it will print install instructions.
 
 ```bash
 npm install -g @dandehoon/unimcp
