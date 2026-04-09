@@ -1,6 +1,6 @@
 {
   "name": "@dandehoon/unimcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A local MCP aggregator that merges multiple MCP servers into a single unified endpoint.",
   "main": "index.js",
   "bin": {
@@ -9,7 +9,7 @@
   "files": [
     "src/",
     "bin/",
-    "dist/",
+    "dist/unimcp.js",
     "README.md"
   ],
   "scripts": {
