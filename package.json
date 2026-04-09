@@ -9,6 +9,7 @@
   "files": [
     "src/",
     "bin/",
+    "dist/",
     "README.md"
   ],
   "scripts": {
@@ -20,6 +21,7 @@
     "dev": "bun run src/index.ts",
     "http": "bun run src/index.ts --http",
     "daemon": "bun run src/index.ts --daemon",
+    "bundle": "bun build --bundle --target=node --minify --outfile dist/unimcp.js src/index.ts",
     "build": "bun build --compile --minify src/index.ts --outfile dist/unimcp && rm -f ./*.bun-build",
     "install-bin": "pnpm build && cp dist/unimcp /usr/local/bin/unimcp && codesign --force --deep --sign - /usr/local/bin/unimcp"
   },

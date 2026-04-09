@@ -77,6 +77,9 @@ jobs:
           git tag "v${{ steps.version.outputs.version }}"
           git push origin HEAD:main --follow-tags
 
+      - name: Build bundle
+        run: pnpm bundle
+
       - name: Publish to npm
         run: pnpm publish --no-git-checks --access public
         env:
