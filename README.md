@@ -12,10 +12,7 @@ Instead of registering Context7, Searxng, your internal API, and a dozen others 
 ## Quick start
 
 ```bash
-# 1. Install
-npm install -g @dandehoon/unimcp
-
-# 2. Create a config
+# 1. Create a config
 mkdir -p ~/.config/unimcp
 cat > ~/.config/unimcp/mcp.json << 'EOF'
 {
@@ -25,16 +22,17 @@ cat > ~/.config/unimcp/mcp.json << 'EOF'
 }
 EOF
 
-# 3. Register in your editors (run from your project directory)
-unimcp setup
+# 2. Register in your editors (run from your project directory)
+npx @dandehoon/unimcp setup
 ```
 
 That's it. Your editors will connect to unimcp as a single MCP server. Add more servers to `mcp.json` anytime — changes hot-reload without restarting anything.
 
-To try without installing:
+If you use unimcp daily, install it globally to skip the `npx` prefix:
 
 ```bash
-npx @dandehoon/unimcp --help
+npm install -g @dandehoon/unimcp
+# then use: unimcp setup, unimcp status, unimcp collect, ...
 ```
 
 ## Configuration
