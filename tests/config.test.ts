@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
-import { loadConfig, isHttpServer, computeEnvHash } from "../src/config.js";
+import { loadConfig, isHttpServer, computeEnvHash, DEFAULT_MCP_FILE, resolveMcpFile } from "../src/config.js";
 import { writeFileSync, unlinkSync, mkdirSync } from "fs";
-import { tmpdir } from "os";
+import { tmpdir, homedir } from "os";
 import { join } from "path";
 
 describe("isHttpServer", () => {
@@ -50,20 +50,19 @@ describe("loadConfig", () => {
     expect((config.mcpServers["s"] as { command: string }).command).toBe("");
   });
 
-  test("loads clients section with tool filters", () => {
-    const file = join(dir, "clients.json");
+  test("loads enabled field on servers", () => {
+    const file = join(dir, "enabled.json");
     writeFileSync(file, JSON.stringify({
       mcpServers: {
-        searxng: { command: "searxng-mcp" },
-      },
-      clients: {
-        copilot: { tools: { exclude: ["searxng__*"] } },
-        claude: { tools: { include: ["*"] } },
+        active: { command: "npx", enabled: true },
+        disabled: { command: "npx", enabled: false },
+        implicit: { command: "npx" },
       },
     }));
     const config = loadConfig(file);
-    expect(config.clients?.["copilot"]).toEqual({ tools: { exclude: ["searxng__*"] } });
-    expect(config.clients?.["claude"]).toEqual({ tools: { include: ["*"] } });
+    expect(config.mcpServers["active"].enabled).toBe(true);
+    expect(config.mcpServers["disabled"].enabled).toBe(false);
+    expect(config.mcpServers["implicit"].enabled).toBeUndefined();
   });
 });
 
@@ -108,5 +107,75 @@ describe("computeEnvHash", () => {
     const hash = computeEnvHash("/tmp/does-not-exist-unimcp-test.json");
     expect(hash).toHaveLength(8);
     expect(hash).toMatch(/^[0-9a-f]{8}$/);
+  });
+});
+
+describe("DEFAULT_MCP_FILE", () => {
+  test("points to ~/.config/unimcp/unimcp.json", () => {
+    expect(DEFAULT_MCP_FILE).toBe(join(homedir(), ".config", "unimcp", "unimcp.json"));
+  });
+});
+
+describe("resolveMcpFile", () => {
+  const localPath = "/tmp/test-project/unimcp.json";
+
+  test("--mcp-file flag takes highest priority", () => {
+    const result = resolveMcpFile({
+      argv: ["--mcp-file", "/custom/config.json"],
+      envConfig: "/env/config.json",
+      localFileExists: true,
+      localFilePath: localPath,
+    });
+    expect(result).toMatch(/config\.json$/);
+  });
+
+  test("--mcp-file=inline flag works", () => {
+    const result = resolveMcpFile({
+      argv: ["--mcp-file=/inline/path.json"],
+      envConfig: undefined,
+      localFileExists: false,
+      localFilePath: localPath,
+    });
+    expect(result).toMatch(/path\.json$/);
+  });
+
+  test("UNIMCP_CONFIG env takes second priority", () => {
+    const result = resolveMcpFile({
+      argv: [],
+      envConfig: "/env/config.json",
+      localFileExists: true,
+      localFilePath: localPath,
+    });
+    expect(result).toBe("/env/config.json");
+  });
+
+  test("local file takes third priority when it exists", () => {
+    const result = resolveMcpFile({
+      argv: [],
+      envConfig: undefined,
+      localFileExists: true,
+      localFilePath: localPath,
+    });
+    expect(result).toBe(localPath);
+  });
+
+  test("falls back to DEFAULT_MCP_FILE when nothing else matches", () => {
+    const result = resolveMcpFile({
+      argv: [],
+      envConfig: undefined,
+      localFileExists: false,
+      localFilePath: localPath,
+    });
+    expect(result).toBe(DEFAULT_MCP_FILE);
+  });
+
+  test("skips local file when it does not exist", () => {
+    const result = resolveMcpFile({
+      argv: [],
+      envConfig: undefined,
+      localFileExists: false,
+      localFilePath: localPath,
+    });
+    expect(result).not.toBe(localPath);
   });
 });

@@ -1,13 +1,16 @@
+import { existsSync } from "fs";
 import path from "path";
 import { startManagedServer } from "./server.js";
 import { ensureDaemon } from "./daemon.js";
 import { runBridge } from "./bridge.js";
 import { runSetup } from "./setup.js";
 import { runCollect } from "./collect.js";
-import { DEFAULT_MCP_FILE, computeEnvHash } from "./config.js";
+import { resolveMcpFile, computeEnvHash } from "./config.js";
 import { printHelp } from "./help.js";
 import { runStatus } from "./status.js";
 import { runMcp } from "./mcp.js";
+
+const LOCAL_MCP_FILE = path.join(process.cwd(), "unimcp.json");
 
 const PORT = Number(process.env.UNIMCP_PORT ?? process.env.PORT ?? 4848);
 const HOST = process.env.UNIMCP_HOST ?? process.env.HOST ?? "127.0.0.1";
@@ -19,15 +22,12 @@ const restArgs = args.slice(1);
 const useHttp = args.includes("--http");
 const isDaemon = args.includes("--daemon");
 
-function resolveMcpFile(): string {
-  const flagIdx = args.indexOf("--mcp-file");
-  if (flagIdx !== -1 && args[flagIdx + 1]) return path.resolve(args[flagIdx + 1]);
-  const inline = args.find((a) => a.startsWith("--mcp-file="));
-  if (inline) return path.resolve(inline.slice("--mcp-file=".length));
-  return process.env.UNIMCP_CONFIG ?? process.env.CONFIG ?? DEFAULT_MCP_FILE;
-}
-
-const CONFIG_PATH = resolveMcpFile();
+const CONFIG_PATH = resolveMcpFile({
+  argv: args,
+  envConfig: process.env.UNIMCP_CONFIG,
+  localFileExists: existsSync(LOCAL_MCP_FILE),
+  localFilePath: LOCAL_MCP_FILE,
+});
 
 function resolveEnvHash(): string {
   const flagIdx = args.indexOf("--env-hash");

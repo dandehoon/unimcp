@@ -5,6 +5,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { minimatch } from "minimatch";
 import { type Config, type ServerConfig, type ToolFilter, isHttpServer } from "./config.js";
+import { log } from "./utils.js";
 
 export const SEP = "__";
 const CLIENT_NAME = "unimcp";
@@ -33,13 +34,13 @@ export class Aggregator {
   private upstreams: UpstreamEntry[] = [];
 
   async connect(config: Config): Promise<void> {
-    const entries = Object.entries(config.mcpServers);
+    const entries = Object.entries(config.mcpServers).filter(([_, srv]) => srv.enabled !== false);
     await Promise.all(entries.map(([name, srv]) => this.connectOne(name, srv)));
   }
 
   private async connectOne(name: string, srv: ServerConfig): Promise<void> {
     if (name.includes(SEP)) {
-      console.error(`[${name}] server name must not contain "${SEP}" — skipped`);
+      log(`[${name}] server name must not contain "${SEP}" — skipped`);
       return;
     }
     const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
@@ -48,10 +49,10 @@ export class Aggregator {
     try {
       await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] connect timed out`);
       const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `[${name}] listTools timed out`);
-      this.upstreams.push({ name, client, tools, filter: srv.tools });
-      console.error(`[${name}] connected (${tools.length} tools)`);
+      this.upstreams.push({ name, client, tools, filter: serverFilter(srv) });
+      log(`[${name}] connected (${tools.length} tools)`);
     } catch (err) {
-      console.error(`[${name}] failed to connect:`, err);
+      log(`[${name}] failed to connect:`, err);
       try { await client.close(); } catch { }
     }
   }
@@ -94,6 +95,14 @@ export class Aggregator {
 }
 
 // --- helpers ---
+
+function serverFilter(srv: ServerConfig): ToolFilter | undefined {
+  if (!srv.include && !srv.exclude) return undefined;
+  const filter: ToolFilter = {};
+  if (srv.include) filter.include = srv.include;
+  if (srv.exclude) filter.exclude = srv.exclude;
+  return filter;
+}
 
 function buildTransport(srv: ServerConfig): Transport {
   if (isHttpServer(srv)) {

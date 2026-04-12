@@ -5,6 +5,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { CONFIG_DIR } from "./server.js";
 import { SEP } from "./aggregator.js";
+import { log } from "./utils.js";
 
 export type StatusOptions = {
   envHash: string;
@@ -17,7 +18,7 @@ export async function runStatus(opts: StatusOptions): Promise<void> {
   try {
     entries = readdirSync(CONFIG_DIR);
   } catch {
-    console.error("No daemons running.");
+    log("No daemons running.");
     return;
   }
 
@@ -26,12 +27,12 @@ export async function runStatus(opts: StatusOptions): Promise<void> {
   );
 
   if (pidFiles.length === 0) {
-    console.error("No daemons running.");
+    log("No daemons running.");
     return;
   }
 
   for (const [i, filename] of pidFiles.entries()) {
-    if (i > 0) console.error("");
+    if (i > 0) log("");
     const envHash = filename.slice("daemon.".length, -".pid".length);
     await checkDaemon(envHash, filename, opts);
   }
@@ -56,15 +57,15 @@ async function checkDaemon(
   try {
     process.kill(pid, 0);
   } catch {
-    console.error(`Daemon ${envHash}  PID ${pid}  stale (process not alive)`);
+    log(`Daemon ${envHash}  PID ${pid}  stale (process not alive)`);
     return;
   }
 
   const configLabel =
     envHash === opts.envHash ? opts.configPath : "(unknown — different env context)";
 
-  console.error(`Daemon ${envHash}  PID ${pid}  http://${opts.host}:${port}/mcp`);
-  console.error(`Config ${configLabel}`);
+  log(`Daemon ${envHash}  PID ${pid}  http://${opts.host}:${port}/mcp`);
+  log(`Config ${configLabel}`);
 
   const client = new Client({ name: "unimcp-status", version: "1.0.0" });
   try {
@@ -104,11 +105,11 @@ function printTools(tools: Tool[]): void {
     map.set(upstream, names);
   }
 
-  console.error(`Tools  ${tools.length} across ${map.size} upstream(s)`);
+  log(`Tools  ${tools.length} across ${map.size} upstream(s)`);
   for (const [upstream, names] of map) {
-    console.error(`  ${upstream}  (${names.length})`);
+    log(`  ${upstream}  (${names.length})`);
     for (const name of names) {
-      console.error(`    ${name}`);
+      log(`    ${name}`);
     }
   }
 }

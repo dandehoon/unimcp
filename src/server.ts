@@ -13,6 +13,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, type Config, type ToolFilter } from "./config.js";
 import { Aggregator } from "./aggregator.js";
+import { log } from "./utils.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
 const READY_TIMEOUT_MS = 60_000;
@@ -61,7 +62,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   function scheduleShutdown() {
     if (idleTimer) return;
     idleTimer = setTimeout(() => {
-      console.error("[server] no active sessions for 30 s — shutting down");
+      log("[server] no active sessions for 30 s — shutting down");
       tryUnlink(pidFile);
       aggregator?.disconnect().catch(() => {}).finally(() => process.exit(0));
       setTimeout(() => process.exit(0), FORCE_EXIT_TIMEOUT_MS).unref();
@@ -122,8 +123,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       return;
     }
 
-    const clientName = req.headers["x-client-name"] as string | undefined;
-    const clientFilter = clientName ? config.clients?.[clientName]?.tools : undefined;
+    const clientFilter = parseToolFilterHeaders(req);
     const mcpServer = buildMcpServer(aggregator, clientFilter);
     transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
@@ -135,7 +135,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
 
   mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   writeFileSync(pidFile, `${process.pid}:${boundPort}`, { encoding: "utf-8", mode: 0o600 });
-  console.error(`[server] listening on http://${opts.host}:${boundPort}/mcp`);
+  log(`[server] listening on http://${opts.host}:${boundPort}/mcp`);
 
   let initializing = true;
   try {
@@ -144,7 +144,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     config = initial.config;
   } catch (err) {
     console.error("[server] initial aggregator build failed:", String(err));
-    console.error("[server] running with 0 tools — fix config and it will hot-reload");
+    log("[server] running with 0 tools — fix config and it will hot-reload");
   } finally {
     initializing = false;
     resolveReady();
@@ -155,7 +155,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   const handleReload = async () => {
     if (isReloading || initializing) return;
     isReloading = true;
-    console.error("[server] config changed — reloading");
+    log("[server] config changed — reloading");
     try {
       const next = await buildAggregator(opts.configPath);
       // Swap reference first so new requests hit the fresh aggregator immediately,
@@ -163,7 +163,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       const old = aggregator;
       aggregator = next.aggregator;
       config = next.config;
-      console.error(`[server] reloaded — ${aggregator.listTools().length} tools`);
+      log(`[server] reloaded — ${aggregator.listTools().length} tools`);
       await old?.disconnect();
     } catch (err) {
       console.error("[server] reload failed:", String(err));
@@ -180,7 +180,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   async function shutdown(signal: string) {
     if (isShuttingDown) return;
     isShuttingDown = true;
-    console.error(`[server] ${signal} — shutting down`);
+    log(`[server] ${signal} — shutting down`);
     tryUnlink(pidFile);
     await aggregator?.disconnect();
     await watcher?.close();
@@ -195,7 +195,7 @@ async function buildAggregator(configPath: string): Promise<{ aggregator: Aggreg
   const config = loadConfig(configPath);
   const aggregator = new Aggregator();
   await aggregator.connect(config);
-  console.error(`[server] ${aggregator.listTools().length} tools ready`);
+  log(`[server] ${aggregator.listTools().length} tools ready`);
   return { aggregator, config };
 }
 
@@ -214,7 +214,7 @@ function listenWithFallback(
         reject(err);
         return;
       }
-      console.error(`[server] port ${preferredPort} in use — using OS-assigned port`);
+      log(`[server] port ${preferredPort} in use — using OS-assigned port`);
       server.listen(0, host, () => {
         resolve((server.address() as { port: number }).port);
       });
@@ -224,4 +224,14 @@ function listenWithFallback(
 
 function tryUnlink(filePath: string): void {
   try { unlinkSync(filePath); } catch { /* already gone */ }
+}
+
+function parseToolFilterHeaders(req: http.IncomingMessage): ToolFilter | undefined {
+  const include = req.headers["x-tools-include"] as string | undefined;
+  const exclude = req.headers["x-tools-exclude"] as string | undefined;
+  if (!include && !exclude) return undefined;
+  const filter: ToolFilter = {};
+  if (include) filter.include = include.split(",").map((s) => s.trim());
+  if (exclude) filter.exclude = exclude.split(",").map((s) => s.trim());
+  return filter;
 }

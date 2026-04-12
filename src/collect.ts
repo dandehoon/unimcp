@@ -3,7 +3,7 @@ import path from "path";
 import os from "os";
 import type { ServerConfig } from "./config.js";
 import { DEFAULT_MCP_FILE } from "./config.js";
-import { stripJsonComments, parseFlagValue } from "./utils.js";
+import { stripJsonComments, parseFlagValue, log } from "./utils.js";
 
 const HOME = os.homedir();
 const CWD = process.cwd();
@@ -42,7 +42,7 @@ export function runCollect(argv: string[]): void {
     const servers = src.read();
     const keys = Object.keys(servers);
     if (keys.length > 0) {
-      console.error(`[collect] ${src.label}: ${keys.length} server(s) — ${keys.join(", ")}`);
+      log(`[collect] ${src.label}: ${keys.length} server(s) — ${keys.join(", ")}`);
       Object.assign(merged, servers);
     }
   }
@@ -53,13 +53,13 @@ export function runCollect(argv: string[]): void {
 
   if (opts.save) {
     writeJson(opts.mcpFilePath, json, { dirMode: 0o700, fileMode: 0o600 });
-    console.error(`[collect] saved ${count} server(s) to ${opts.mcpFilePath}`);
+    log(`[collect] saved ${count} server(s) to ${opts.mcpFilePath}`);
     return;
   }
 
   if (opts.outputPath) {
     writeJson(opts.outputPath, json, { dirMode: 0o755, fileMode: 0o644 });
-    console.error(`[collect] wrote ${count} server(s) to ${opts.outputPath}`);
+    log(`[collect] wrote ${count} server(s) to ${opts.outputPath}`);
     return;
   }
 
@@ -90,7 +90,7 @@ function readMcpServersFile(filePath: string): Record<string, ServerConfig> {
     const config = JSON.parse(raw) as Record<string, unknown>;
     return (config["mcpServers"] ?? {}) as Record<string, ServerConfig>;
   } catch {
-    console.error(`[collect] warning: could not parse ${filePath}`);
+    log(`[collect] warning: could not parse ${filePath}`);
     return {};
   }
 }
@@ -111,7 +111,7 @@ function readVsCodeGlobal(): Record<string, ServerConfig> {
     }
     return result;
   } catch {
-    console.error(`[collect] warning: could not parse VS Code mcp.json`);
+    log(`[collect] warning: could not parse VS Code mcp.json`);
     return {};
   }
 }
@@ -133,7 +133,7 @@ function readOpenCode(): Record<string, ServerConfig> {
     }
     return result;
   } catch {
-    console.error(`[collect] warning: could not parse opencode.json`);
+    log(`[collect] warning: could not parse opencode.json`);
     return {};
   }
 }

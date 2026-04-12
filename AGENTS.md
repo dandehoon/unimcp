@@ -25,7 +25,7 @@ tests/
   workflows/
     ci.yml       # Type check + unit tests on push/PR to main
     release.yml  # Build multi-platform binaries + publish to npm on vX.Y.Z tag
-mcp.json         # Server config (gitignored — user-created, not committed)
+unimcp.json      # Server config (gitignored — user-created, not committed)
 .env             # Secrets (gitignored)
 tsconfig.json    # Strict ESNext, moduleResolution: Bundler, noEmit
 package.json     # pnpm project, scripts below
@@ -210,18 +210,18 @@ await client.connect(new StdioClientTransport({ command, args, env }));
 
 ## Key architectural rules
 
-- `mcp.json` is **gitignored** — never commit it; it is user-local
-- `.env` is **gitignored** — no longer auto-loaded; secrets must be set in the shell environment before launching unimcp. `${VAR}` in `mcp.json` is expanded from `process.env` at load time.
-- The default mcp config is **`~/.config/unimcp/mcp.json`** (`DEFAULT_MCP_FILE` exported from `config.ts`); override with `--mcp-file` flag or `CONFIG` env var
+- `unimcp.json` is **gitignored** — never commit it; it is user-local
+- `.env` is **gitignored** — no longer auto-loaded; secrets must be set in the shell environment before launching unimcp. `${VAR}` in `unimcp.json` is expanded from `process.env` at load time.
+- Config resolution order: `./unimcp.json` (local cwd) > `--mcp-file` flag / `UNIMCP_CONFIG` env > `~/.config/unimcp/unimcp.json` (global default). The `DEFAULT_MCP_FILE` exported from `config.ts` points to the global path; local resolution is in `resolveMcpFile()` in `index.ts`.
 - Daemon pid files live at **`~/.config/unimcp/daemon.<envHash>.pid`** (not in cwd)
-  - `envHash` is an 8-char lowercase hex SHA-256 over the values of all `${VAR}` references in `mcp.json` from the bridge's `process.env`
+  - `envHash` is an 8-char lowercase hex SHA-256 over the values of all `${VAR}` references in `unimcp.json` from the bridge's `process.env`
   - Format: `"<pid>:<port>"` e.g. `"94663:4848"` or `"94844:52341"` (after port fallback)
   - `CONFIG_DIR` is exported from `server.ts`; pid file path is computed dynamically from `envHash` in both `server.ts` and `daemon.ts`
   - Each distinct env context spawns its own isolated daemon; clients sharing the same env hash reuse one daemon
 
 ### Key constants
 ```
-DEFAULT_MCP_FILE = ~/.config/unimcp/mcp.json            (config.ts)
+DEFAULT_MCP_FILE = ~/.config/unimcp/unimcp.json          (config.ts)
 CONFIG_DIR       = ~/.config/unimcp                     (server.ts)
 PID_FILE         = ~/.config/unimcp/daemon.<envHash>.pid (computed in server.ts / daemon.ts)
 SYSTEM_BIN_PATH  = /usr/local/bin/unimcp                (setup.ts)
@@ -239,13 +239,26 @@ SEP              = "__"                                 (aggregator.ts)
 
 ### Per-client tool filtering
 
-- The optional `clients` section in `mcp.json` maps client names to `ClientConfig = { tools?: ToolFilter }`
-- Client identity is carried as the `UNIMCP_CLIENT` env var in the bridge process, forwarded as `X-Client-Name` HTTP header to the daemon
-- The daemon reads `X-Client-Name` per request and resolves `config.clients[clientName]?.tools` as a `clientFilter`
-- `aggregator.listTools(clientFilter?)` applies both the per-server filter AND the client filter (both must pass)
-- `unimcp setup` auto-injects `UNIMCP_CLIENT=<targetId>` into the `env` block of each editor registration
-- Clients without a `clients` entry see all tools (open default — backwards compatible)
-- Direct HTTP callers (not via bridge) can set `X-Client-Name` header directly
+- Client-side filtering is controlled via environment variables on the bridge process:
+  - `UNIMCP_INCLUDE` — comma-separated glob patterns (only matching tools visible)
+  - `UNIMCP_EXCLUDE` — comma-separated glob patterns (matching tools hidden)
+- The bridge reads these env vars and forwards them as `X-Tools-Include` / `X-Tools-Exclude` HTTP headers to the daemon
+- The daemon parses these headers into a `ToolFilter` and passes it to `aggregator.listTools(clientFilter?)`
+- `aggregator.listTools(clientFilter?)` applies both the per-server filter (from `srv.include`/`srv.exclude`) AND the client filter (both must pass)
+- Clients without filter env vars see all tools (open default)
+- Direct HTTP callers (not via bridge) can set `X-Tools-Include` / `X-Tools-Exclude` headers directly
+
+### Per-server tool filtering
+
+- Each server in `unimcp.json` can have optional `include` and `exclude` fields (flat, not nested)
+- These are glob patterns applied to tool names before aggregation
+- Example: `"include": ["search_*"], "exclude": ["search_internal"]`
+
+### Server enabled/disabled
+
+- Each server config supports an optional `enabled` field (default: `true`)
+- Set `"enabled": false` to skip a server without removing its config
+- Disabled servers are filtered out in `aggregator.connect()` before any connections are made
 
 ---
 
@@ -256,8 +269,8 @@ SEP              = "__"                                 (aggregator.ts)
 ```bash
 unimcp collect                       # print merged config to stdout
 unimcp collect -o out.json           # write to a file
-unimcp collect --save                # write to ~/.config/unimcp/mcp.json (default mcp-file)
-unimcp collect --save --mcp-file /path/to/mcp.json  # write to a custom file
+unimcp collect --save                # write to ~/.config/unimcp/unimcp.json (default mcp-file)
+unimcp collect --save --mcp-file /path/to/unimcp.json  # write to a custom file
 ```
 
 Sources (in order, last-write-wins on name collision):
@@ -268,7 +281,7 @@ Sources (in order, last-write-wins on name collision):
 5. OpenCode global (`~/.config/opencode/opencode.json` → `mcp`, remapped, enabled only)
 6. `.mcp.json` in cwd (same file as Claude Code project scope — deduplicated naturally)
 
-Output format: `{ "mcpServers": { ... } }` — directly usable as unimcp's mcp.json.
+Output format: `{ "mcpServers": { ... } }` — directly usable as unimcp's unimcp.json.
 
 ---
 
@@ -290,7 +303,6 @@ Output format: `{ "mcpServers": { ... } }` — directly usable as unimcp's mcp.j
 - **Dedup**: skips a target if `"unimcp"` key already exists
 - **`--global --target=claude,copilot`**: force-write global even if file doesn't exist
 - OpenCode has no project-level equivalent (global only)
-- **`UNIMCP_CLIENT`**: each registration includes `"env": { "UNIMCP_CLIENT": "<targetId>" }` for per-client tool filtering
 
 ---
 

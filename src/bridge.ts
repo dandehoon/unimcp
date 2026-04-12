@@ -11,6 +11,7 @@ import {
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig } from "./config.js";
 import { SEP } from "./aggregator.js";
+import { log } from "./utils.js";
 
 export type BridgeOptions = {
   port: number;
@@ -20,11 +21,11 @@ export type BridgeOptions = {
 
 export async function runBridge(opts: BridgeOptions): Promise<void> {
   const daemonUrl = new URL(`http://${opts.host}:${opts.port}/mcp`);
-  const clientName = process.env["UNIMCP_CLIENT"];
+  const headers = buildFilterHeaders();
 
   const client = new Client({ name: "unimcp-bridge", version: "1.0.0" });
   const clientTransport = new StreamableHTTPClientTransport(daemonUrl, {
-    requestInit: clientName ? { headers: { "x-client-name": clientName } } : undefined,
+    requestInit: Object.keys(headers).length > 0 ? { headers } : undefined,
   });
   await client.connect(clientTransport);
 
@@ -76,13 +77,22 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
 
 // --- helpers ---
 
+function buildFilterHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const include = process.env["UNIMCP_INCLUDE"];
+  const exclude = process.env["UNIMCP_EXCLUDE"];
+  if (include) headers["x-tools-include"] = include;
+  if (exclude) headers["x-tools-exclude"] = exclude;
+  return headers;
+}
+
 function logConnectionStatus(tools: Tool[], configPath: string): void {
   let configuredNames: string[] = [];
   try {
     const config = loadConfig(configPath);
     configuredNames = Object.keys(config.mcpServers);
   } catch {
-    console.error(`[bridge] connected to daemon — ${tools.length} tools available`);
+    log(`[bridge] connected to daemon — ${tools.length} tools available`);
     return;
   }
 
@@ -92,5 +102,5 @@ function logConnectionStatus(tools: Tool[], configPath: string): void {
   const failed = configuredNames.filter((n) => !connectedNames.has(n));
   const parts = configuredNames.map((n) => (connectedNames.has(n) ? `${n}: ok` : `${n}: no tools`));
   const suffix = failed.length > 0 ? ` ⚠ ${failed.length} upstream(s) unavailable` : "";
-  console.error(`[bridge] connected to daemon — ${tools.length} tools (${parts.join(", ")})${suffix}`);
+  log(`[bridge] connected to daemon — ${tools.length} tools (${parts.join(", ")})${suffix}`);
 }

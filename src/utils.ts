@@ -1,3 +1,8 @@
+/** Write to stderr without color (avoids Bun's red console.error). */
+export function log(...args: unknown[]): void {
+  process.stderr.write(args.map(String).join(" ") + "\n");
+}
+
 export function parseFlagValue(argv: string[], flag: string): string | null {
   const idx = argv.indexOf(flag);
   if (idx !== -1) return argv[idx + 1] ?? null;

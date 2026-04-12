@@ -5,7 +5,7 @@ import os from "os";
 
 const MAX_CONFIG_BYTES = 1_048_576; // 1 MB
 
-export const DEFAULT_MCP_FILE = path.join(os.homedir(), ".config", "unimcp", "mcp.json");
+export const DEFAULT_MCP_FILE = path.join(os.homedir(), ".config", "unimcp", "unimcp.json");
 
 const ENV_VAR_RE = /\$\{(\w+)\}/g;
 
@@ -14,33 +14,48 @@ export type ToolFilter = {
   exclude?: string[]; // glob patterns — defaults to [] (none)
 };
 
-export type ClientConfig = {
-  tools?: ToolFilter;
-};
-
 export type StdioServer = {
   command: string;
   args?: string[];
   env?: Record<string, string>;
-  tools?: ToolFilter;
+  enabled?: boolean;
+  include?: string[];
+  exclude?: string[];
 };
 
 export type HttpServer = {
   type: "http";
   url: string;
   headers?: Record<string, string>;
-  tools?: ToolFilter;
+  enabled?: boolean;
+  include?: string[];
+  exclude?: string[];
 };
 
 export type ServerConfig = StdioServer | HttpServer;
 
 export type Config = {
   mcpServers: Record<string, ServerConfig>;
-  clients?: Record<string, ClientConfig>;
+};
+
+export type ResolveMcpFileOpts = {
+  argv: string[];
+  envConfig?: string;
+  localFileExists: boolean;
+  localFilePath: string;
 };
 
 export function isHttpServer(s: ServerConfig): s is HttpServer {
   return (s as HttpServer).type === "http";
+}
+
+/** Resolves the config file path using the standard precedence order. */
+export function resolveMcpFile(opts: ResolveMcpFileOpts): string {
+  const flagPath = parseMcpFileFlag(opts.argv);
+  if (flagPath) return path.resolve(flagPath);
+  if (opts.envConfig) return opts.envConfig;
+  if (opts.localFileExists) return opts.localFilePath;
+  return DEFAULT_MCP_FILE;
 }
 
 export function loadConfig(filePath: string): Config {
@@ -74,4 +89,12 @@ function guardFileSize(filePath: string): void {
   if (stat.size > MAX_CONFIG_BYTES) {
     throw new Error(`Config file too large (${stat.size} bytes; max ${MAX_CONFIG_BYTES}): ${filePath}`);
   }
+}
+
+function parseMcpFileFlag(argv: string[]): string | undefined {
+  const flagIdx = argv.indexOf("--mcp-file");
+  if (flagIdx !== -1 && argv[flagIdx + 1]) return argv[flagIdx + 1];
+  const inline = argv.find((a) => a.startsWith("--mcp-file="));
+  if (inline) return inline.slice("--mcp-file=".length);
+  return undefined;
 }

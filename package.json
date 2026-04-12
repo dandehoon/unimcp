@@ -28,7 +28,7 @@
   },
   "keywords": [],
   "author": "dandehoon <nguyenbao1917@gmail.com>",
-  "license": "ISC",
+  "license": "MIT",
   "type": "module",
   "publishConfig": {
     "access": "public"

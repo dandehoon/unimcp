@@ -2,7 +2,7 @@ import { existsSync, writeFileSync, mkdirSync } from "fs";
 import path from "path";
 import { loadConfig, isHttpServer } from "./config.js";
 import type { Config, ServerConfig } from "./config.js";
-import { parseFlagValue } from "./utils.js";
+import { parseFlagValue, log } from "./utils.js";
 
 export function runMcp(argv: string[], configPath: string): void {
   const sub = argv[0];
@@ -26,16 +26,16 @@ function cmdList(configPath: string): void {
   const servers = Object.entries(config.mcpServers);
 
   if (servers.length === 0) {
-    console.error("(no servers configured)");
+    log("(no servers configured)");
     return;
   }
 
   for (const [name, srv] of servers) {
     if (isHttpServer(srv)) {
-      console.error(`${name}  http  ${srv.url}`);
+      log(`${name}  http  ${srv.url}`);
     } else {
       const argsPart = srv.args?.length ? `  ${srv.args.join(" ")}` : "";
-      console.error(`${name}  stdio  ${srv.command}${argsPart}`);
+      log(`${name}  stdio  ${srv.command}${argsPart}`);
     }
   }
 }
@@ -54,30 +54,30 @@ function cmdGet(name: string, configPath: string): void {
     process.exit(1);
   }
 
-  console.error(`name:  ${name}`);
+  log(`name:  ${name}`);
 
   if (isHttpServer(srv)) {
-    console.error(`type:  http`);
-    console.error(`url:   ${maskUrl(srv.url)}`);
+    log(`type:  http`);
+    log(`url:   ${maskUrl(srv.url)}`);
     if (srv.headers && Object.keys(srv.headers).length > 0) {
-      console.error(`headers:`);
+      log(`headers:`);
       for (const [k, v] of Object.entries(srv.headers)) {
-        console.error(`  ${k}: ${maskValue(k, v)}`);
+        log(`  ${k}: ${maskValue(k, v)}`);
       }
     } else {
-      console.error(`headers: (none)`);
+      log(`headers: (none)`);
     }
   } else {
-    console.error(`type:    stdio`);
-    console.error(`command: ${srv.command}`);
-    console.error(`args:    ${srv.args?.length ? srv.args.join(" ") : "(none)"}`);
+    log(`type:    stdio`);
+    log(`command: ${srv.command}`);
+    log(`args:    ${srv.args?.length ? srv.args.join(" ") : "(none)"}`);
     if (srv.env && Object.keys(srv.env).length > 0) {
-      console.error(`env:`);
+      log(`env:`);
       for (const [k, v] of Object.entries(srv.env)) {
-        console.error(`  ${k}=${maskValue(k, v)}`);
+        log(`  ${k}=${maskValue(k, v)}`);
       }
     } else {
-      console.error(`env:     (none)`);
+      log(`env:     (none)`);
     }
   }
 }
@@ -99,7 +99,7 @@ function cmdAdd(name: string, argv: string[], configPath: string): void {
   const srv = type === "http" ? buildHttpServer(argv) : buildStdioServer(argv);
   config.mcpServers[name] = srv;
   writeConfig(configPath, config);
-  console.error(`[mcp] added '${name}'`);
+  log(`[mcp] added '${name}'`);
 }
 
 function cmdAddJson(name: string, jsonStr: string, configPath: string): void {
@@ -124,7 +124,7 @@ function cmdAddJson(name: string, jsonStr: string, configPath: string): void {
 
   config.mcpServers[name] = srv;
   writeConfig(configPath, config);
-  console.error(`[mcp] added '${name}'`);
+  log(`[mcp] added '${name}'`);
 }
 
 function cmdRemove(name: string, configPath: string): void {
@@ -141,7 +141,7 @@ function cmdRemove(name: string, configPath: string): void {
 
   delete config.mcpServers[name];
   writeConfig(configPath, config);
-  console.error(`[mcp] removed '${name}'`);
+  log(`[mcp] removed '${name}'`);
 }
 
 // --- helpers ---

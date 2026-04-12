@@ -2,6 +2,7 @@ import { readFileSync, unlinkSync } from "fs";
 import { spawn } from "child_process";
 import path from "path";
 import { CONFIG_DIR } from "./server.js";
+import { log } from "./utils.js";
 
 const HEALTH_CHECK_TIMEOUT_MS = 3_000;
 const SPAWN_WAIT_MS = 15_000;
@@ -23,7 +24,7 @@ type DaemonInfo = {
 export async function ensureDaemon(opts: DaemonOptions): Promise<number> {
   const running = await runningDaemon(opts.envHash, opts.host);
   if (running) {
-    console.error(`[daemon] already running on port ${running.port}`);
+    log(`[daemon] already running on port ${running.port}`);
     return running.port;
   }
   return startDaemon(opts);
@@ -70,10 +71,10 @@ async function startDaemon(opts: DaemonOptions): Promise<number> {
   const pid = child.pid;
   if (!pid) throw new Error("Failed to spawn daemon — no pid");
 
-  console.error(`[daemon] spawned PID ${pid} — waiting for health check…`);
+  log(`[daemon] spawned PID ${pid} — waiting for health check…`);
 
   const port = await waitForDaemon(opts.envHash, opts.host);
-  console.error(`[daemon] ready on http://${opts.host}:${port}/mcp`);
+  log(`[daemon] ready on http://${opts.host}:${port}/mcp`);
   return port;
 }
 
