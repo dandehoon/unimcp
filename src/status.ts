@@ -1,10 +1,11 @@
-import { readdirSync, readFileSync } from "fs";
+import { readdirSync } from "fs";
 import path from "path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { CONFIG_DIR } from "./server.js";
 import { SEP } from "./aggregator.js";
+import { parsePidFile, isAlive } from "./daemon.js";
 import { log } from "./utils.js";
 
 export type StatusOptions = {
@@ -44,19 +45,16 @@ async function checkDaemon(
   opts: StatusOptions
 ): Promise<void> {
   const pidFile = path.join(CONFIG_DIR, filename);
-  const content = readFileSync(pidFile, "utf-8").trim();
-  const [pidStr, portStr] = content.split(":");
-  const pid = Number(pidStr);
-  const port = Number(portStr);
+  const info = parsePidFile(pidFile);
 
-  if (isNaN(pid) || isNaN(port)) {
-    console.error(`[corrupt pid file: ${pidFile}]`);
+  if (!info) {
+    log(`[corrupt pid file: ${pidFile}]`);
     return;
   }
 
-  try {
-    process.kill(pid, 0);
-  } catch {
+  const { pid, port } = info;
+
+  if (!isAlive(pid)) {
     log(`Daemon ${envHash}  PID ${pid}  stale (process not alive)`);
     return;
   }
@@ -73,7 +71,7 @@ async function checkDaemon(
       new StreamableHTTPClientTransport(new URL(`http://${opts.host}:${port}/mcp`))
     );
   } catch (err) {
-    console.error(`  [unreachable: ${String(err)}]`);
+    log(`  [unreachable: ${String(err)}]`);
     return;
   }
 
@@ -82,7 +80,7 @@ async function checkDaemon(
     const result = await client.listTools();
     tools = result.tools;
   } catch (err) {
-    console.error(`  [listTools failed: ${String(err)}]`);
+    log(`  [listTools failed: ${String(err)}]`);
     await client.close();
     return;
   }

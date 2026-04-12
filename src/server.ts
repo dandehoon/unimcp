@@ -1,5 +1,5 @@
 import http from "http";
-import { writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { writeFileSync, mkdirSync } from "fs";
 import path from "path";
 import os from "os";
 import { watch } from "chokidar";
@@ -11,9 +11,9 @@ import {
   ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
-import { loadConfig, type Config, type ToolFilter } from "./config.js";
+import { loadConfig, type Config, type ToolFilter, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE } from "./config.js";
 import { Aggregator } from "./aggregator.js";
-import { log } from "./utils.js";
+import { log, tryUnlink } from "./utils.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
 const READY_TIMEOUT_MS = 60_000;
@@ -143,7 +143,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     aggregator = initial.aggregator;
     config = initial.config;
   } catch (err) {
-    console.error("[server] initial aggregator build failed:", String(err));
+    log("[server] initial aggregator build failed:", String(err));
     log("[server] running with 0 tools — fix config and it will hot-reload");
   } finally {
     initializing = false;
@@ -166,7 +166,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       log(`[server] reloaded — ${aggregator.listTools().length} tools`);
       await old?.disconnect();
     } catch (err) {
-      console.error("[server] reload failed:", String(err));
+      log("[server] reload failed:", String(err));
     } finally {
       isReloading = false;
     }
@@ -222,13 +222,9 @@ function listenWithFallback(
   });
 }
 
-function tryUnlink(filePath: string): void {
-  try { unlinkSync(filePath); } catch { /* already gone */ }
-}
-
 function parseToolFilterHeaders(req: http.IncomingMessage): ToolFilter | undefined {
-  const include = req.headers["x-tools-include"] as string | undefined;
-  const exclude = req.headers["x-tools-exclude"] as string | undefined;
+  const include = req.headers[HEADER_TOOLS_INCLUDE] as string | undefined;
+  const exclude = req.headers[HEADER_TOOLS_EXCLUDE] as string | undefined;
   if (!include && !exclude) return undefined;
   const filter: ToolFilter = {};
   if (include) filter.include = include.split(",").map((s) => s.trim());

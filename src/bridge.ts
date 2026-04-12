@@ -9,7 +9,7 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE } from "./config.js";
 import { SEP } from "./aggregator.js";
 import { log } from "./utils.js";
 
@@ -25,7 +25,7 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
 
   const client = new Client({ name: "unimcp-bridge", version: "1.0.0" });
   const clientTransport = new StreamableHTTPClientTransport(daemonUrl, {
-    requestInit: Object.keys(headers).length > 0 ? { headers } : undefined,
+    requestInit: headers ? { headers } : undefined,
   });
   await client.connect(clientTransport);
 
@@ -77,12 +77,13 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
 
 // --- helpers ---
 
-function buildFilterHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
+function buildFilterHeaders(): Record<string, string> | undefined {
   const include = process.env["UNIMCP_INCLUDE"];
   const exclude = process.env["UNIMCP_EXCLUDE"];
-  if (include) headers["x-tools-include"] = include;
-  if (exclude) headers["x-tools-exclude"] = exclude;
+  if (!include && !exclude) return undefined;
+  const headers: Record<string, string> = {};
+  if (include) headers[HEADER_TOOLS_INCLUDE] = include;
+  if (exclude) headers[HEADER_TOOLS_EXCLUDE] = exclude;
   return headers;
 }
 

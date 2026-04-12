@@ -1,8 +1,8 @@
-import { readFileSync, unlinkSync } from "fs";
+import { readFileSync } from "fs";
 import { spawn } from "child_process";
 import path from "path";
 import { CONFIG_DIR } from "./server.js";
-import { log } from "./utils.js";
+import { log, tryUnlink } from "./utils.js";
 
 const HEALTH_CHECK_TIMEOUT_MS = 3_000;
 const SPAWN_WAIT_MS = 15_000;
@@ -16,7 +16,7 @@ export type DaemonOptions = {
   envHash: string;
 };
 
-type DaemonInfo = {
+export type DaemonInfo = {
   pid: number;
   port: number;
 };
@@ -38,13 +38,13 @@ async function runningDaemon(envHash: string, host: string): Promise<DaemonInfo 
   if (!info) return null;
 
   if (!isAlive(info.pid)) {
-    unlinkSync(pidFile);
+    tryUnlink(pidFile);
     return null;
   }
 
   const healthy = await checkHealth(host, info.port);
   if (!healthy) {
-    try { unlinkSync(pidFile); } catch { /* already gone */ }
+    tryUnlink(pidFile);
     return null;
   }
 
@@ -91,7 +91,7 @@ async function waitForDaemon(envHash: string, host: string): Promise<number> {
   throw new Error(`Daemon did not become healthy within ${SPAWN_WAIT_S} s`);
 }
 
-function parsePidFile(pidFile: string): DaemonInfo | null {
+export function parsePidFile(pidFile: string): DaemonInfo | null {
   let content: string;
   try {
     content = readFileSync(pidFile, "utf-8").trim();
@@ -105,7 +105,7 @@ function parsePidFile(pidFile: string): DaemonInfo | null {
   return { pid, port };
 }
 
-function isAlive(pid: number): boolean {
+export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

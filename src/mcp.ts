@@ -14,8 +14,8 @@ export function runMcp(argv: string[], configPath: string): void {
   if (sub === "add-json") return cmdAddJson(rest[0], rest[1], configPath);
   if (sub === "remove") return cmdRemove(rest[0], configPath);
 
-  console.error(`[mcp] unknown subcommand: ${sub ?? "(none)"}`);
-  console.error("Usage: unimcp mcp <list|get|add|add-json|remove> [args]");
+  log(`[mcp] unknown subcommand: ${sub ?? "(none)"}`);
+  log("Usage: unimcp mcp <list|get|add|add-json|remove> [args]");
   process.exit(1);
 }
 
@@ -42,7 +42,7 @@ function cmdList(configPath: string): void {
 
 function cmdGet(name: string, configPath: string): void {
   if (!name) {
-    console.error("[mcp] get requires a server name");
+    log("[mcp] get requires a server name");
     process.exit(1);
   }
 
@@ -50,7 +50,7 @@ function cmdGet(name: string, configPath: string): void {
   const srv = config.mcpServers[name];
 
   if (!srv) {
-    console.error(`[mcp] server '${name}' not found`);
+    log(`[mcp] server '${name}' not found`);
     process.exit(1);
   }
 
@@ -84,7 +84,7 @@ function cmdGet(name: string, configPath: string): void {
 
 function cmdAdd(name: string, argv: string[], configPath: string): void {
   if (!name) {
-    console.error("[mcp] add requires a server name");
+    log("[mcp] add requires a server name");
     process.exit(1);
   }
 
@@ -92,7 +92,7 @@ function cmdAdd(name: string, argv: string[], configPath: string): void {
 
   const config = readConfig(configPath);
   if (config.mcpServers[name]) {
-    console.error(`[mcp] server '${name}' already exists — remove it first`);
+    log(`[mcp] server '${name}' already exists — remove it first`);
     process.exit(1);
   }
 
@@ -104,7 +104,7 @@ function cmdAdd(name: string, argv: string[], configPath: string): void {
 
 function cmdAddJson(name: string, jsonStr: string, configPath: string): void {
   if (!name || !jsonStr) {
-    console.error("[mcp] add-json requires a name and a JSON string");
+    log("[mcp] add-json requires a name and a JSON string");
     process.exit(1);
   }
 
@@ -112,13 +112,13 @@ function cmdAddJson(name: string, jsonStr: string, configPath: string): void {
   try {
     srv = JSON.parse(jsonStr) as ServerConfig;
   } catch {
-    console.error(`[mcp] invalid JSON: ${jsonStr}`);
+    log(`[mcp] invalid JSON: ${jsonStr}`);
     process.exit(1);
   }
 
   const config = readConfig(configPath);
   if (config.mcpServers[name]) {
-    console.error(`[mcp] server '${name}' already exists — remove it first`);
+    log(`[mcp] server '${name}' already exists — remove it first`);
     process.exit(1);
   }
 
@@ -129,13 +129,13 @@ function cmdAddJson(name: string, jsonStr: string, configPath: string): void {
 
 function cmdRemove(name: string, configPath: string): void {
   if (!name) {
-    console.error("[mcp] remove requires a server name");
+    log("[mcp] remove requires a server name");
     process.exit(1);
   }
 
   const config = readConfig(configPath);
   if (!config.mcpServers[name]) {
-    console.error(`[mcp] server '${name}' not found`);
+    log(`[mcp] server '${name}' not found`);
     process.exit(1);
   }
 
@@ -149,7 +149,7 @@ function cmdRemove(name: string, configPath: string): void {
 function buildStdioServer(argv: string[]): ServerConfig {
   const command = parseFlagValue(argv, "--command");
   if (!command) {
-    console.error("[mcp] --command is required for stdio servers");
+    log("[mcp] --command is required for stdio servers");
     process.exit(1);
   }
 
@@ -164,7 +164,7 @@ function buildStdioServer(argv: string[]): ServerConfig {
 function buildHttpServer(argv: string[]): ServerConfig {
   const url = parseFlagValue(argv, "--url");
   if (!url) {
-    console.error("[mcp] --url is required for http servers");
+    log("[mcp] --url is required for http servers");
     process.exit(1);
   }
 
@@ -179,7 +179,7 @@ function readConfig(configPath: string): Config {
   try {
     return loadConfig(configPath);
   } catch (err) {
-    console.error(`[mcp] could not read config: ${String(err)}`);
+    log(`[mcp] could not read config: ${String(err)}`);
     process.exit(1);
   }
 }

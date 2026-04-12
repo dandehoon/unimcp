@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { readFileSync, statSync } from "fs";
 import path from "path";
 import os from "os";
+import { parseFlagValue } from "./utils.js";
 
 const MAX_CONFIG_BYTES = 1_048_576; // 1 MB
 
@@ -13,6 +14,9 @@ export type ToolFilter = {
   include?: string[]; // glob patterns — defaults to ["*"] (all)
   exclude?: string[]; // glob patterns — defaults to [] (none)
 };
+
+export const HEADER_TOOLS_INCLUDE = "x-tools-include";
+export const HEADER_TOOLS_EXCLUDE = "x-tools-exclude";
 
 export type StdioServer = {
   command: string;
@@ -51,7 +55,7 @@ export function isHttpServer(s: ServerConfig): s is HttpServer {
 
 /** Resolves the config file path using the standard precedence order. */
 export function resolveMcpFile(opts: ResolveMcpFileOpts): string {
-  const flagPath = parseMcpFileFlag(opts.argv);
+  const flagPath = parseFlagValue(opts.argv, "--mcp-file");
   if (flagPath) return path.resolve(flagPath);
   if (opts.envConfig) return opts.envConfig;
   if (opts.localFileExists) return opts.localFilePath;
@@ -91,10 +95,3 @@ function guardFileSize(filePath: string): void {
   }
 }
 
-function parseMcpFileFlag(argv: string[]): string | undefined {
-  const flagIdx = argv.indexOf("--mcp-file");
-  if (flagIdx !== -1 && argv[flagIdx + 1]) return argv[flagIdx + 1];
-  const inline = argv.find((a) => a.startsWith("--mcp-file="));
-  if (inline) return inline.slice("--mcp-file=".length);
-  return undefined;
-}

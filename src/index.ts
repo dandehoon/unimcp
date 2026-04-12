@@ -9,6 +9,7 @@ import { resolveMcpFile, computeEnvHash } from "./config.js";
 import { printHelp } from "./help.js";
 import { runStatus } from "./status.js";
 import { runMcp } from "./mcp.js";
+import { log } from "./utils.js";
 
 const LOCAL_MCP_FILE = path.join(process.cwd(), "unimcp.json");
 
@@ -72,7 +73,7 @@ async function main() {
   }
 
   if (command && !command.startsWith("-")) {
-    console.error(`[unimcp] unknown command: ${command}`);
+    log(`[unimcp] unknown command: ${command}`);
     printHelp();
     process.exit(1);
   }
@@ -82,6 +83,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(String(err));
+  log(String(err));
   process.exit(1);
 });

@@ -1,6 +1,12 @@
+import { unlinkSync } from "fs";
+
 /** Write to stderr without color (avoids Bun's red console.error). */
 export function log(...args: unknown[]): void {
   process.stderr.write(args.map(String).join(" ") + "\n");
+}
+
+export function tryUnlink(filePath: string): void {
+  try { unlinkSync(filePath); } catch { /* already gone */ }
 }
 
 export function parseFlagValue(argv: string[], flag: string): string | null {

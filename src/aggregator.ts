@@ -89,7 +89,7 @@ export class Aggregator {
   async disconnect(): Promise<void> {
     const results = await Promise.allSettled(this.upstreams.map(({ client }) => client.close()));
     for (const r of results) {
-      if (r.status === "rejected") console.error("[aggregator] disconnect error:", r.reason);
+      if (r.status === "rejected") log("[aggregator] disconnect error:", r.reason);
     }
   }
 }
@@ -98,10 +98,7 @@ export class Aggregator {
 
 function serverFilter(srv: ServerConfig): ToolFilter | undefined {
   if (!srv.include && !srv.exclude) return undefined;
-  const filter: ToolFilter = {};
-  if (srv.include) filter.include = srv.include;
-  if (srv.exclude) filter.exclude = srv.exclude;
-  return filter;
+  return { include: srv.include, exclude: srv.exclude };
 }
 
 function buildTransport(srv: ServerConfig): Transport {
