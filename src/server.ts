@@ -140,6 +140,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   } catch (err) {
     log("[server] initial aggregator build failed:", String(err));
     log("[server] running with 0 tools — fix config and it will hot-reload");
+    aggregator = new Aggregator();
   } finally {
     initializing = false;
     resolveReady();
