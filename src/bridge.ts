@@ -11,7 +11,7 @@ import {
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE } from "./config.js";
 import { SEP } from "./aggregator.js";
-import { log } from "./utils.js";
+import { log, MCP_SERVER_IDENTITY } from "./utils.js";
 
 export type BridgeOptions = {
   port: number;
@@ -23,7 +23,7 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   const daemonUrl = new URL(`http://${opts.host}:${opts.port}/mcp`);
   const headers = buildFilterHeaders();
 
-  const client = new Client({ name: "unimcp-bridge", version: "1.0.0" });
+  const client = new Client({ name: "unimcp-bridge", version: MCP_SERVER_IDENTITY.version });
   const clientTransport = new StreamableHTTPClientTransport(daemonUrl, {
     requestInit: headers ? { headers } : undefined,
   });
@@ -33,7 +33,7 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   logConnectionStatus(initialTools.tools, opts.configPath);
 
   const server = new Server(
-    { name: "unimcp", version: "1.0.0" },
+    MCP_SERVER_IDENTITY,
     { capabilities: { tools: {} } }
   );
 
@@ -88,20 +88,29 @@ function buildFilterHeaders(): Record<string, string> | undefined {
 }
 
 function logConnectionStatus(tools: Tool[], configPath: string): void {
-  let configuredNames: string[] = [];
+  let configuredNames: string[];
   try {
     const config = loadConfig(configPath);
-    configuredNames = Object.keys(config.mcpServers);
+    configuredNames = Object.entries(config.mcpServers)
+      .filter(([_n, srv]) => srv.enabled !== false)
+      .map(([name]) => name);
   } catch {
     log(`[bridge] connected to daemon — ${tools.length} tools available`);
     return;
   }
 
-  const connectedNames = new Set(
-    tools.map((t) => t.name.slice(0, t.name.indexOf(SEP))).filter(Boolean)
-  );
-  const failed = configuredNames.filter((n) => !connectedNames.has(n));
-  const parts = configuredNames.map((n) => (connectedNames.has(n) ? `${n}: ok` : `${n}: no tools`));
-  const suffix = failed.length > 0 ? ` ⚠ ${failed.length} upstream(s) unavailable` : "";
+  const connectedNames = new Set<string>();
+  for (const t of tools) {
+    const idx = t.name.indexOf(SEP);
+    if (idx > 0) connectedNames.add(t.name.slice(0, idx));
+  }
+
+  let failedCount = 0;
+  const parts = configuredNames.map((n) => {
+    if (connectedNames.has(n)) return `${n}: ok`;
+    failedCount++;
+    return `${n}: no tools`;
+  });
+  const suffix = failedCount > 0 ? ` ⚠ ${failedCount} upstream(s) unavailable` : "";
   log(`[bridge] connected to daemon — ${tools.length} tools (${parts.join(", ")})${suffix}`);
 }

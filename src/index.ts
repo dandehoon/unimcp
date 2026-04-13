@@ -1,88 +1,142 @@
 import { existsSync } from "fs";
 import path from "path";
+import { Command } from "commander";
 import { startManagedServer } from "./server.js";
 import { ensureDaemon } from "./daemon.js";
 import { runBridge } from "./bridge.js";
 import { runSetup } from "./setup.js";
 import { runCollect } from "./collect.js";
 import { resolveMcpFile, computeEnvHash } from "./config.js";
-import { printHelp } from "./help.js";
 import { runStatus } from "./status.js";
-import { runMcp } from "./mcp.js";
-import { log } from "./utils.js";
+import { cmdList, cmdGet, cmdAdd, cmdAddJson, cmdRemove } from "./mcp.js";
+import type { AddOpts } from "./mcp.js";
+import { log, splitCommaSeparated, collectRepeatable } from "./utils.js";
 
 const LOCAL_MCP_FILE = path.join(process.cwd(), "unimcp.json");
-
 const PORT = Number(process.env.UNIMCP_PORT ?? process.env.PORT ?? 4848);
 const HOST = process.env.UNIMCP_HOST ?? process.env.HOST ?? "127.0.0.1";
 
-const args = process.argv.slice(2);
-const command = args[0];
-const restArgs = args.slice(1);
+const LOCAL_FILE_EXISTS = existsSync(LOCAL_MCP_FILE);
+const ENV_CONFIG = process.env.UNIMCP_CONFIG;
 
-const useHttp = args.includes("--http");
-const isDaemon = args.includes("--daemon");
+const program = new Command();
 
-const CONFIG_PATH = resolveMcpFile({
-  argv: args,
-  envConfig: process.env.UNIMCP_CONFIG,
-  localFileExists: existsSync(LOCAL_MCP_FILE),
-  localFilePath: LOCAL_MCP_FILE,
-});
+program
+  .name("unimcp")
+  .description("MCP aggregator — merges upstream MCP servers into one endpoint")
+  .option("--mcp-file <path>", "Config file path")
+  .option("--env-hash <hash>", "Env hash override (internal)")
+  .option("--http", "Start as managed HTTP server")
+  .option("--daemon", "Alias for --http")
+  .action(async (opts: { mcpFile?: string; envHash?: string; http?: boolean; daemon?: boolean }) => {
+    const configPath = resolveConfigPath(opts.mcpFile);
+    const envHash = resolveEnvHash(opts.envHash, configPath);
 
-function resolveEnvHash(): string {
-  const flagIdx = args.indexOf("--env-hash");
-  const candidate = flagIdx !== -1 ? args[flagIdx + 1] : undefined;
-  if (candidate && /^[0-9a-f]{8}$/.test(candidate)) return candidate;
-  return computeEnvHash(CONFIG_PATH);
+    if (opts.http ?? opts.daemon) {
+      await startManagedServer({ port: PORT, host: HOST, configPath, envHash });
+      return;
+    }
+
+    const actualPort = await ensureDaemon({ port: PORT, host: HOST, configPath, envHash });
+    await runBridge({ port: actualPort, host: HOST, configPath });
+  });
+
+program
+  .command("status")
+  .description("Show running daemon info and loaded tools")
+  .action(async (_opts, cmd) => {
+    const g = globalOpts(cmd);
+    const configPath = resolveConfigPath(g.mcpFile);
+    const envHash = resolveEnvHash(g.envHash, configPath);
+    await runStatus({ envHash, host: HOST, configPath });
+  });
+
+program
+  .command("setup")
+  .description("Register unimcp in client editor configs")
+  .option("--global", "Write to user-level config files")
+  .option("--target <ids>", "Comma-separated targets: claude,cursor,copilot,opencode", splitCommaSeparated)
+  .action(async (opts: { global?: boolean; target?: string[] }) => {
+    await runSetup({ isGlobal: opts.global ?? false, targets: opts.target ?? null });
+  });
+
+program
+  .command("collect")
+  .description("Merge client MCP configs and print to stdout")
+  .option("--save", "Write output to --mcp-file path")
+  .option("-o, --output <path>", "Write output to file")
+  .action((opts: { save?: boolean; output?: string }, cmd) => {
+    runCollect({
+      save: opts.save ?? false,
+      outputPath: opts.output ?? null,
+      mcpFilePath: resolveConfigPath(globalOpts(cmd).mcpFile),
+    });
+  });
+
+program
+  .command("list")
+  .description("List all servers in unimcp.json")
+  .action((_opts, cmd) => {
+    cmdList(resolveConfigPath(globalOpts(cmd).mcpFile));
+  });
+
+program
+  .command("get <name>")
+  .description("Show details for one server")
+  .action((name: string, _opts, cmd) => {
+    cmdGet(name, resolveConfigPath(globalOpts(cmd).mcpFile));
+  });
+
+program
+  .command("add <name>")
+  .description("Add a server (--command/--url, --type, --args, --env, --header)")
+  .option("--type <stdio|http>", "Server type", "stdio")
+  .option("--command <cmd>", "Command to run (stdio)")
+  .option("--args <a,b,c>", "Comma-separated arguments (stdio)", splitCommaSeparated)
+  .option("--env <KEY=VAL>", "Env variable; repeatable", collectRepeatable, [] as string[])
+  .option("--url <url>", "Server URL (http)")
+  .option("--header <KEY=VAL>", "Request header; repeatable", collectRepeatable, [] as string[])
+  .action((name: string, opts: AddOpts, cmd) => {
+    cmdAdd(name, opts, resolveConfigPath(globalOpts(cmd).mcpFile));
+  });
+
+program
+  .command("add-json <name> <json>")
+  .description("Add a server from a JSON string")
+  .action((name: string, json: string, _opts, cmd) => {
+    cmdAddJson(name, json, resolveConfigPath(globalOpts(cmd).mcpFile));
+  });
+
+program
+  .command("remove <name>")
+  .description("Remove a server")
+  .action((name: string, _opts, cmd) => {
+    cmdRemove(name, resolveConfigPath(globalOpts(cmd).mcpFile));
+  });
+
+// --- helpers ---
+
+type GlobalOpts = { mcpFile?: string; envHash?: string };
+
+function globalOpts(cmd: Command): GlobalOpts {
+  return cmd.optsWithGlobals() as GlobalOpts;
 }
 
-const ENV_HASH = resolveEnvHash();
-
-const MCP_COMMANDS = new Set(["list", "get", "add", "add-json", "remove"]);
-
-async function main() {
-  if (args.includes("--help") || command === "help") {
-    printHelp();
-    return;
-  }
-
-  if (command === "status") {
-    await runStatus({ envHash: ENV_HASH, host: HOST, configPath: CONFIG_PATH });
-    return;
-  }
-
-  if (command === "setup") {
-    await runSetup(restArgs);
-    return;
-  }
-
-  if (command === "collect") {
-    runCollect(restArgs);
-    return;
-  }
-
-  if (command && MCP_COMMANDS.has(command)) {
-    runMcp([command, ...restArgs], CONFIG_PATH);
-    return;
-  }
-
-  if (useHttp || isDaemon) {
-    await startManagedServer({ port: PORT, host: HOST, configPath: CONFIG_PATH, envHash: ENV_HASH });
-    return;
-  }
-
-  if (command && !command.startsWith("-")) {
-    log(`[unimcp] unknown command: ${command}`);
-    printHelp();
-    process.exit(1);
-  }
-
-  const actualPort = await ensureDaemon({ port: PORT, host: HOST, configPath: CONFIG_PATH, envHash: ENV_HASH });
-  await runBridge({ port: actualPort, host: HOST, configPath: CONFIG_PATH });
+function resolveConfigPath(flagPath?: string): string {
+  return resolveMcpFile({
+    flagPath,
+    envConfig: ENV_CONFIG,
+    localFileExists: LOCAL_FILE_EXISTS,
+    localFilePath: LOCAL_MCP_FILE,
+  });
 }
 
-main().catch((err) => {
+function resolveEnvHash(flagHash: string | undefined, configPath: string): string {
+  if (flagHash && /^[0-9a-f]{8}$/.test(flagHash)) return flagHash;
+  return computeEnvHash(configPath);
+}
+
+program.parseAsync(process.argv).catch((err) => {
   log(String(err));
   process.exit(1);
 });

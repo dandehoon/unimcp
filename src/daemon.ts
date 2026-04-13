@@ -1,7 +1,6 @@
 import { readFileSync } from "fs";
 import { spawn } from "child_process";
-import path from "path";
-import { CONFIG_DIR } from "./server.js";
+import { CONFIG_DIR, pidFilePath } from "./config.js";
 import { log, tryUnlink } from "./utils.js";
 
 const HEALTH_CHECK_TIMEOUT_MS = 3_000;
@@ -131,8 +130,4 @@ function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function pidFilePath(envHash: string): string {
-  return path.join(CONFIG_DIR, `daemon.${envHash}.pid`);
 }

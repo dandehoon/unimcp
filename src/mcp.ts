@@ -1,27 +1,20 @@
-import { existsSync, writeFileSync, mkdirSync } from "fs";
-import path from "path";
-import { loadConfig, isHttpServer } from "./config.js";
+import { loadConfig } from "./config.js";
 import type { Config, ServerConfig } from "./config.js";
-import { parseFlagValue, log } from "./utils.js";
+import { log, parseKvPairs, writeFileSafe, toJson } from "./utils.js";
+import { formatServer, formatListLine } from "./mcp-format.js";
 
-export function runMcp(argv: string[], configPath: string): void {
-  const sub = argv[0];
-  const rest = argv.slice(1);
-
-  if (sub === "list") return cmdList(configPath);
-  if (sub === "get") return cmdGet(rest[0], configPath);
-  if (sub === "add") return cmdAdd(rest[0], rest.slice(1), configPath);
-  if (sub === "add-json") return cmdAddJson(rest[0], rest[1], configPath);
-  if (sub === "remove") return cmdRemove(rest[0], configPath);
-
-  log(`[mcp] unknown subcommand: ${sub ?? "(none)"}`);
-  log("Usage: unimcp mcp <list|get|add|add-json|remove> [args]");
-  process.exit(1);
-}
+export type AddOpts = {
+  type: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  env: string[];
+  url?: string;
+  header: string[];
+};
 
 // --- subcommands ---
 
-function cmdList(configPath: string): void {
+export function cmdList(configPath: string): void {
   const config = readConfig(configPath);
   const servers = Object.entries(config.mcpServers);
 
@@ -31,113 +24,45 @@ function cmdList(configPath: string): void {
   }
 
   for (const [name, srv] of servers) {
-    if (isHttpServer(srv)) {
-      log(`${name}  http  ${srv.url}`);
-    } else {
-      const argsPart = srv.args?.length ? `  ${srv.args.join(" ")}` : "";
-      log(`${name}  stdio  ${srv.command}${argsPart}`);
-    }
+    log(formatListLine(name, srv));
   }
 }
 
-function cmdGet(name: string, configPath: string): void {
-  if (!name) {
-    log("[mcp] get requires a server name");
-    process.exit(1);
-  }
+export function cmdGet(name: string, configPath: string): void {
+  requireArg(name, "get requires a server name");
 
   const config = readConfig(configPath);
-  const srv = config.mcpServers[name];
-
-  if (!srv) {
-    log(`[mcp] server '${name}' not found`);
-    process.exit(1);
-  }
+  const srv = requireServer(name, config);
 
   log(`name:  ${name}`);
-
-  if (isHttpServer(srv)) {
-    log(`type:  http`);
-    log(`url:   ${maskUrl(srv.url)}`);
-    if (srv.headers && Object.keys(srv.headers).length > 0) {
-      log(`headers:`);
-      for (const [k, v] of Object.entries(srv.headers)) {
-        log(`  ${k}: ${maskValue(k, v)}`);
-      }
-    } else {
-      log(`headers: (none)`);
-    }
-  } else {
-    log(`type:    stdio`);
-    log(`command: ${srv.command}`);
-    log(`args:    ${srv.args?.length ? srv.args.join(" ") : "(none)"}`);
-    if (srv.env && Object.keys(srv.env).length > 0) {
-      log(`env:`);
-      for (const [k, v] of Object.entries(srv.env)) {
-        log(`  ${k}=${maskValue(k, v)}`);
-      }
-    } else {
-      log(`env:     (none)`);
-    }
-  }
+  for (const line of formatServer(srv)) log(line);
 }
 
-function cmdAdd(name: string, argv: string[], configPath: string): void {
-  if (!name) {
-    log("[mcp] add requires a server name");
-    process.exit(1);
-  }
-
-  const type = parseFlagValue(argv, "--type") ?? "stdio";
+export function cmdAdd(name: string, opts: AddOpts, configPath: string): void {
+  requireArg(name, "add requires a server name");
 
   const config = readConfig(configPath);
-  if (config.mcpServers[name]) {
-    log(`[mcp] server '${name}' already exists — remove it first`);
-    process.exit(1);
-  }
+  guardNotExists(name, config);
 
-  const srv = type === "http" ? buildHttpServer(argv) : buildStdioServer(argv);
-  config.mcpServers[name] = srv;
-  writeConfig(configPath, config);
-  log(`[mcp] added '${name}'`);
+  const srv = opts.type === "http" ? buildHttpServer(opts) : buildStdioServer(opts);
+  persistServer({ name, srv, config, configPath });
 }
 
-function cmdAddJson(name: string, jsonStr: string, configPath: string): void {
-  if (!name || !jsonStr) {
-    log("[mcp] add-json requires a name and a JSON string");
-    process.exit(1);
-  }
-
-  let srv: ServerConfig;
-  try {
-    srv = JSON.parse(jsonStr) as ServerConfig;
-  } catch {
-    log(`[mcp] invalid JSON: ${jsonStr}`);
-    process.exit(1);
-  }
+export function cmdAddJson(name: string, jsonStr: string, configPath: string): void {
+  requireArg(name, "add-json requires a name");
+  requireArg(jsonStr, "add-json requires a JSON string");
 
   const config = readConfig(configPath);
-  if (config.mcpServers[name]) {
-    log(`[mcp] server '${name}' already exists — remove it first`);
-    process.exit(1);
-  }
+  guardNotExists(name, config);
 
-  config.mcpServers[name] = srv;
-  writeConfig(configPath, config);
-  log(`[mcp] added '${name}'`);
+  persistServer({ name, srv: parseServerJson(jsonStr), config, configPath });
 }
 
-function cmdRemove(name: string, configPath: string): void {
-  if (!name) {
-    log("[mcp] remove requires a server name");
-    process.exit(1);
-  }
+export function cmdRemove(name: string, configPath: string): void {
+  requireArg(name, "remove requires a server name");
 
   const config = readConfig(configPath);
-  if (!config.mcpServers[name]) {
-    log(`[mcp] server '${name}' not found`);
-    process.exit(1);
-  }
+  requireServer(name, config);
 
   delete config.mcpServers[name];
   writeConfig(configPath, config);
@@ -146,88 +71,70 @@ function cmdRemove(name: string, configPath: string): void {
 
 // --- helpers ---
 
-function buildStdioServer(argv: string[]): ServerConfig {
-  const command = parseFlagValue(argv, "--command");
-  if (!command) {
-    log("[mcp] --command is required for stdio servers");
-    process.exit(1);
-  }
-
-  const argsRaw = parseFlagValue(argv, "--args");
-  const args = argsRaw ? argsRaw.split(",").map((s) => s.trim()) : undefined;
-  const envPairs = parseRepeatedFlag(argv, "--env");
-  const env = envPairs.length > 0 ? parseEnvPairs(envPairs) : undefined;
-
-  return { command, ...(args && { args }), ...(env && { env }) };
+function die(message: string): never {
+  log(`[mcp] ${message}`);
+  process.exit(1);
 }
 
-function buildHttpServer(argv: string[]): ServerConfig {
-  const url = parseFlagValue(argv, "--url");
-  if (!url) {
-    log("[mcp] --url is required for http servers");
-    process.exit(1);
-  }
+function requireArg(value: string | undefined, message: string): void {
+  if (!value) die(message);
+}
 
-  const headerPairs = parseRepeatedFlag(argv, "--header");
-  const headers = headerPairs.length > 0 ? parseEnvPairs(headerPairs) : undefined;
+function requireServer(name: string, config: Config): ServerConfig {
+  const srv = config.mcpServers[name];
+  if (!srv) die(`server '${name}' not found`);
+  return srv;
+}
 
-  return { type: "http", url, ...(headers && { headers }) };
+function guardNotExists(name: string, config: Config): void {
+  if (config.mcpServers[name]) die(`server '${name}' already exists — remove it first`);
+}
+
+function buildStdioServer(opts: AddOpts): ServerConfig {
+  if (!opts.command) die("--command is required for stdio servers");
+  const env = kvPairsOrUndefined(opts.env);
+  return {
+    command: opts.command,
+    ...(opts.args?.length && { args: opts.args }),
+    ...(env && { env }),
+  };
+}
+
+function buildHttpServer(opts: AddOpts): ServerConfig {
+  if (!opts.url) die("--url is required for http servers");
+  const headers = kvPairsOrUndefined(opts.header);
+  return { type: "http", url: opts.url, ...(headers && { headers }) };
 }
 
 function readConfig(configPath: string): Config {
-  if (!existsSync(configPath)) return { mcpServers: {} };
   try {
     return loadConfig(configPath);
-  } catch (err) {
-    log(`[mcp] could not read config: ${String(err)}`);
-    process.exit(1);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { mcpServers: {} };
+    throw new Error(`could not read config at ${configPath}: ${String(err)}`, { cause: err });
   }
 }
 
 function writeConfig(configPath: string, config: Config): void {
-  mkdirSync(path.dirname(configPath), { recursive: true });
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  writeFileSafe(configPath, toJson(config));
 }
 
-function parseRepeatedFlag(argv: string[], flag: string): string[] {
-  const results: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === flag && argv[i + 1]) {
-      results.push(argv[i + 1]);
-    } else if (argv[i].startsWith(flag + "=")) {
-      results.push(argv[i].slice(flag.length + 1));
-    }
-  }
-  return results;
+type PersistOpts = { name: string; srv: ServerConfig; config: Config; configPath: string };
+
+function persistServer(opts: PersistOpts): void {
+  opts.config.mcpServers[opts.name] = opts.srv;
+  writeConfig(opts.configPath, opts.config);
+  log(`[mcp] added '${opts.name}'`);
 }
 
-function parseEnvPairs(pairs: string[]): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const pair of pairs) {
-    const eq = pair.indexOf("=");
-    if (eq === -1) continue;
-    result[pair.slice(0, eq)] = pair.slice(eq + 1);
-  }
-  return result;
-}
-
-const SECRET_KEYWORDS = ["key", "token", "secret", "auth", "bearer", "password"];
-
-function maskValue(key: string, value: string): string {
-  const lower = key.toLowerCase();
-  return SECRET_KEYWORDS.some((kw) => lower.includes(kw)) ? "***" : value;
-}
-
-function maskUrl(raw: string): string {
+function parseServerJson(jsonStr: string): ServerConfig {
   try {
-    const u = new URL(raw);
-    for (const [k] of u.searchParams) {
-      if (SECRET_KEYWORDS.some((kw) => k.toLowerCase().includes(kw))) {
-        u.searchParams.set(k, "***");
-      }
-    }
-    return u.toString();
+    return JSON.parse(jsonStr) as ServerConfig;
   } catch {
-    return raw;
+    die(`invalid JSON: ${jsonStr}`);
   }
+}
+
+function kvPairsOrUndefined(pairs: string[]): Record<string, string> | undefined {
+  return pairs.length > 0 ? parseKvPairs(pairs) : undefined;
 }

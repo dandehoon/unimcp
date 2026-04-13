@@ -121,7 +121,7 @@ describe("resolveMcpFile", () => {
 
   test("--mcp-file flag takes highest priority", () => {
     const result = resolveMcpFile({
-      argv: ["--mcp-file", "/custom/config.json"],
+      flagPath: "/custom/config.json",
       envConfig: "/env/config.json",
       localFileExists: true,
       localFilePath: localPath,
@@ -131,7 +131,7 @@ describe("resolveMcpFile", () => {
 
   test("--mcp-file=inline flag works", () => {
     const result = resolveMcpFile({
-      argv: ["--mcp-file=/inline/path.json"],
+      flagPath: "/inline/path.json",
       envConfig: undefined,
       localFileExists: false,
       localFilePath: localPath,
@@ -141,7 +141,6 @@ describe("resolveMcpFile", () => {
 
   test("UNIMCP_CONFIG env takes second priority", () => {
     const result = resolveMcpFile({
-      argv: [],
       envConfig: "/env/config.json",
       localFileExists: true,
       localFilePath: localPath,
@@ -151,7 +150,6 @@ describe("resolveMcpFile", () => {
 
   test("local file takes third priority when it exists", () => {
     const result = resolveMcpFile({
-      argv: [],
       envConfig: undefined,
       localFileExists: true,
       localFilePath: localPath,
@@ -161,7 +159,6 @@ describe("resolveMcpFile", () => {
 
   test("falls back to DEFAULT_MCP_FILE when nothing else matches", () => {
     const result = resolveMcpFile({
-      argv: [],
       envConfig: undefined,
       localFileExists: false,
       localFilePath: localPath,
@@ -171,7 +168,6 @@ describe("resolveMcpFile", () => {
 
   test("skips local file when it does not exist", () => {
     const result = resolveMcpFile({
-      argv: [],
       envConfig: undefined,
       localFileExists: false,
       localFilePath: localPath,

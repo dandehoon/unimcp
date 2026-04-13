@@ -3,10 +3,10 @@ import path from "path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { CONFIG_DIR } from "./server.js";
+import { CONFIG_DIR } from "./config.js";
 import { SEP } from "./aggregator.js";
 import { parsePidFile, isAlive } from "./daemon.js";
-import { log } from "./utils.js";
+import { log, MCP_SERVER_IDENTITY } from "./utils.js";
 
 export type StatusOptions = {
   envHash: string;
@@ -65,7 +65,7 @@ async function checkDaemon(
   log(`Daemon ${envHash}  PID ${pid}  http://${opts.host}:${port}/mcp`);
   log(`Config ${configLabel}`);
 
-  const client = new Client({ name: "unimcp-status", version: "1.0.0" });
+  const client = new Client({ name: "unimcp-status", version: MCP_SERVER_IDENTITY.version });
   try {
     await client.connect(
       new StreamableHTTPClientTransport(new URL(`http://${opts.host}:${port}/mcp`))
@@ -98,9 +98,9 @@ function printTools(tools: Tool[]): void {
     const sepIdx = tool.name.indexOf(SEP);
     const upstream = sepIdx === -1 ? "(unknown)" : tool.name.slice(0, sepIdx);
     const name = sepIdx === -1 ? tool.name : tool.name.slice(sepIdx + SEP.length);
-    const names = map.get(upstream) ?? [];
+    let names = map.get(upstream);
+    if (!names) { names = []; map.set(upstream, names); }
     names.push(name);
-    map.set(upstream, names);
   }
 
   log(`Tools  ${tools.length} across ${map.size} upstream(s)`);

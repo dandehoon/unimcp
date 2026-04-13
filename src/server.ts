@@ -1,7 +1,4 @@
 import http from "http";
-import { writeFileSync, mkdirSync } from "fs";
-import path from "path";
-import os from "os";
 import { watch } from "chokidar";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -11,14 +8,14 @@ import {
   ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
-import { loadConfig, type Config, type ToolFilter, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE } from "./config.js";
+import { loadConfig, type ToolFilter, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, CONFIG_DIR, pidFilePath } from "./config.js";
 import { Aggregator } from "./aggregator.js";
-import { log, tryUnlink } from "./utils.js";
+import { log, tryUnlink, splitCommaSeparated, writeFileSafe, PERMS_PRIVATE, MCP_SERVER_IDENTITY } from "./utils.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
 const READY_TIMEOUT_MS = 60_000;
 const FORCE_EXIT_TIMEOUT_MS = 5_000;
-export const CONFIG_DIR = path.join(os.homedir(), ".config", "unimcp");
+
 export type ManagedServerOptions = {
   port: number;
   host: string;
@@ -28,7 +25,7 @@ export type ManagedServerOptions = {
 
 function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Server {
   const server = new Server(
-    { name: "unimcp", version: "1.0.0" },
+    MCP_SERVER_IDENTITY,
     { capabilities: { tools: {} } }
   );
 
@@ -49,10 +46,9 @@ function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Serv
 }
 
 export async function startManagedServer(opts: ManagedServerOptions): Promise<void> {
-  const pidFile = path.join(CONFIG_DIR, `daemon.${opts.envHash}.pid`);
+  const pidFile = pidFilePath(opts.envHash);
   let watcher: ReturnType<typeof watch> | null = null;
   let aggregator: Aggregator | null = null;
-  let config: Config | null = null;
   let activeSessions = 0;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   let resolveReady: () => void = () => {};
@@ -62,7 +58,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   function scheduleShutdown() {
     if (idleTimer) return;
     idleTimer = setTimeout(() => {
-      log("[server] no active sessions for 30 s — shutting down");
+      log(`[server] no active sessions for ${IDLE_TIMEOUT_MS / 1_000} s — shutting down`);
       tryUnlink(pidFile);
       aggregator?.disconnect().catch(() => {}).finally(() => process.exit(0));
       setTimeout(() => process.exit(0), FORCE_EXIT_TIMEOUT_MS).unref();
@@ -108,17 +104,18 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       }
     });
 
+    let readyTimer!: ReturnType<typeof setTimeout>;
     const ready = await Promise.race([
       readyPromise.then(() => true),
-      new Promise<false>((r) => setTimeout(() => r(false), READY_TIMEOUT_MS)),
-    ]);
+      new Promise<false>((r) => { readyTimer = setTimeout(() => r(false), READY_TIMEOUT_MS); }),
+    ]).finally(() => clearTimeout(readyTimer));
 
     if (!ready) {
       res.writeHead(503).end("Service Unavailable — upstream connections still initializing");
       return;
     }
 
-    if (!aggregator || !config) {
+    if (!aggregator) {
       res.writeHead(503).end("Service Unavailable — upstream connections failed");
       return;
     }
@@ -133,15 +130,13 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
 
   const boundPort = await listenWithFallback(httpServer, opts.port, opts.host);
 
-  mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-  writeFileSync(pidFile, `${process.pid}:${boundPort}`, { encoding: "utf-8", mode: 0o600 });
+  writeFileSafe(pidFile, `${process.pid}:${boundPort}`, PERMS_PRIVATE);
   log(`[server] listening on http://${opts.host}:${boundPort}/mcp`);
 
   let initializing = true;
   try {
     const initial = await buildAggregator(opts.configPath);
     aggregator = initial.aggregator;
-    config = initial.config;
   } catch (err) {
     log("[server] initial aggregator build failed:", String(err));
     log("[server] running with 0 tools — fix config and it will hot-reload");
@@ -162,8 +157,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       // then tear down the old one (eliminates race window and simultaneous live connections).
       const old = aggregator;
       aggregator = next.aggregator;
-      config = next.config;
-      log(`[server] reloaded — ${aggregator.listTools().length} tools`);
+      log(`[server] reloaded — ${next.toolCount} tools`);
       await old?.disconnect();
     } catch (err) {
       log("[server] reload failed:", String(err));
@@ -191,12 +185,13 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
 
 // --- helpers ---
 
-async function buildAggregator(configPath: string): Promise<{ aggregator: Aggregator; config: Config }> {
+async function buildAggregator(configPath: string): Promise<{ aggregator: Aggregator; toolCount: number }> {
   const config = loadConfig(configPath);
   const aggregator = new Aggregator();
   await aggregator.connect(config);
-  log(`[server] ${aggregator.listTools().length} tools ready`);
-  return { aggregator, config };
+  const toolCount = aggregator.listTools().length;
+  log(`[server] ${toolCount} tools ready`);
+  return { aggregator, toolCount };
 }
 
 function listenWithFallback(
@@ -227,7 +222,7 @@ function parseToolFilterHeaders(req: http.IncomingMessage): ToolFilter | undefin
   const exclude = req.headers[HEADER_TOOLS_EXCLUDE] as string | undefined;
   if (!include && !exclude) return undefined;
   const filter: ToolFilter = {};
-  if (include) filter.include = include.split(",").map((s) => s.trim());
-  if (exclude) filter.exclude = exclude.split(",").map((s) => s.trim());
+  if (include) filter.include = splitCommaSeparated(include);
+  if (exclude) filter.exclude = splitCommaSeparated(exclude);
   return filter;
 }

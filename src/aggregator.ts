@@ -3,7 +3,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { minimatch } from "minimatch";
+import { Minimatch } from "minimatch";
 import { type Config, type ServerConfig, type ToolFilter, isHttpServer } from "./config.js";
 import { log } from "./utils.js";
 
@@ -17,21 +17,36 @@ type UpstreamEntry = {
   name: string;
   client: Client;
   tools: Tool[];
-  filter?: ToolFilter;
 };
 
 type AggregatedTool = Tool & { upstreamName: string; originalName: string };
 
+const MATCH_ALL = [new Minimatch("*")];
+const MATCH_NONE: Minimatch[] = [];
+
+const patternCache = new Map<string, Minimatch[]>();
+
+function compilePatterns(patterns: string[]): Minimatch[] {
+  const key = patterns.join("\0");
+  let compiled = patternCache.get(key);
+  if (!compiled) {
+    compiled = patterns.map((p) => new Minimatch(p));
+    patternCache.set(key, compiled);
+  }
+  return compiled;
+}
+
+/** Checks whether a bare tool name passes a filter. Patterns match bare (unprefixed) names. */
 export function matchesFilter(toolName: string, filter?: ToolFilter): boolean {
-  const include = filter?.include ?? ["*"];
-  const exclude = filter?.exclude ?? [];
-  const included = include.some((pat) => minimatch(toolName, pat));
-  const excluded = exclude.some((pat) => minimatch(toolName, pat));
-  return included && !excluded;
+  const include = filter?.include ? compilePatterns(filter.include) : MATCH_ALL;
+  const exclude = filter?.exclude ? compilePatterns(filter.exclude) : MATCH_NONE;
+  return include.some((m) => m.match(toolName)) && !exclude.some((m) => m.match(toolName));
 }
 
 export class Aggregator {
-  private upstreams: UpstreamEntry[] = [];
+  private upstreams: Map<string, UpstreamEntry> = new Map();
+  private toolCache: AggregatedTool[] | null = null;
+  private clientFilterCache = new Map<string, AggregatedTool[]>();
 
   async connect(config: Config): Promise<void> {
     const entries = Object.entries(config.mcpServers).filter(([_, srv]) => srv.enabled !== false);
@@ -49,25 +64,40 @@ export class Aggregator {
     try {
       await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] connect timed out`);
       const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `[${name}] listTools timed out`);
-      this.upstreams.push({ name, client, tools, filter: serverFilter(srv) });
-      log(`[${name}] connected (${tools.length} tools)`);
+      const filter = serverFilter(srv);
+      const filtered = tools.filter((t) => matchesFilter(t.name, filter));
+      this.upstreams.set(name, { name, client, tools: filtered });
+      log(`[${name}] connected (${filtered.length} tools)`);
     } catch (err) {
       log(`[${name}] failed to connect:`, err);
       try { await client.close(); } catch { }
     }
   }
 
-  listTools(clientFilter?: ToolFilter): AggregatedTool[] {
-    return this.upstreams.flatMap(({ name, tools, filter }) =>
-      tools
-        .filter((t) => matchesFilter(t.name, filter) && matchesFilter(t.name, clientFilter))
-        .map((t) => ({
-          ...t,
-          name: `${name}${SEP}${t.name}`,
-          upstreamName: name,
-          originalName: t.name,
-        }))
+  private buildToolCache(): AggregatedTool[] {
+    return [...this.upstreams.values()].flatMap(({ name, tools }) =>
+      tools.map((t) => ({
+        ...t,
+        name: `${name}${SEP}${t.name}`,
+        upstreamName: name,
+        originalName: t.name,
+      }))
     );
+  }
+
+  listTools(clientFilter?: ToolFilter): AggregatedTool[] {
+    if (!this.toolCache) {
+      this.toolCache = this.buildToolCache();
+      this.clientFilterCache.clear();
+    }
+    if (!clientFilter?.include && !clientFilter?.exclude) return this.toolCache;
+    const key = `${clientFilter.include?.join("\0") ?? ""}|${clientFilter.exclude?.join("\0") ?? ""}`;
+    let cached = this.clientFilterCache.get(key);
+    if (!cached) {
+      cached = this.toolCache.filter((t) => matchesFilter(t.originalName, clientFilter));
+      this.clientFilterCache.set(key, cached);
+    }
+    return cached;
   }
 
   async callTool(prefixedName: string, args: Record<string, unknown>): Promise<ReturnType<Client["callTool"]>> {
@@ -76,7 +106,7 @@ export class Aggregator {
     const upstreamName = prefixedName.slice(0, sep);
     const toolName = prefixedName.slice(sep + SEP.length);
 
-    const upstream = this.upstreams.find((u) => u.name === upstreamName);
+    const upstream = this.upstreams.get(upstreamName);
     if (!upstream) throw new Error(`Unknown upstream: ${upstreamName}`);
 
     return withTimeout(
@@ -87,7 +117,10 @@ export class Aggregator {
   }
 
   async disconnect(): Promise<void> {
-    const results = await Promise.allSettled(this.upstreams.map(({ client }) => client.close()));
+    this.toolCache = null;
+    this.clientFilterCache.clear();
+    const results = await Promise.allSettled(Array.from(this.upstreams.values(), ({ client }) => client.close()));
+    this.upstreams.clear();
     for (const r of results) {
       if (r.status === "rejected") log("[aggregator] disconnect error:", r.reason);
     }
@@ -115,10 +148,9 @@ function buildTransport(srv: ServerConfig): Transport {
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), ms);
-    promise
-      .then((val) => { clearTimeout(timer); resolve(val); })
-      .catch((err) => { clearTimeout(timer); reject(err); });
+  let timer!: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
   });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
