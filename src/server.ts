@@ -1,4 +1,5 @@
 import http from "http";
+import { existsSync } from "fs";
 import { watch } from "chokidar";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -46,6 +47,11 @@ function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Serv
 }
 
 export async function startManagedServer(opts: ManagedServerOptions): Promise<void> {
+  if (!existsSync(opts.configPath)) {
+    log(`[server] config file not found: ${opts.configPath}`);
+    process.exit(1);
+  }
+
   const pidFile = pidFilePath(opts.envHash);
   let watcher: ReturnType<typeof watch> | null = null;
   let aggregator: Aggregator | null = null;

@@ -72,15 +72,18 @@ async function startDaemon(opts: DaemonOptions): Promise<number> {
 
   log(`[daemon] spawned PID ${pid} — waiting for health check…`);
 
-  const port = await waitForDaemon(opts.envHash, opts.host);
+  const port = await waitForDaemon(pid, opts.envHash, opts.host);
   log(`[daemon] ready on http://${opts.host}:${port}/mcp`);
   return port;
 }
 
-async function waitForDaemon(envHash: string, host: string): Promise<number> {
+async function waitForDaemon(spawnedPid: number, envHash: string, host: string): Promise<number> {
   const pidFile = pidFilePath(envHash);
   const deadline = Date.now() + SPAWN_WAIT_MS;
   while (Date.now() < deadline) {
+    if (!isAlive(spawnedPid)) {
+      throw new Error("Daemon exited unexpectedly — config file missing or invalid");
+    }
     const info = parsePidFile(pidFile);
     if (info && isAlive(info.pid) && (await checkHealth(host, info.port))) {
       return info.port;
