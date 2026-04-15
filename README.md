@@ -1,53 +1,67 @@
 # unimcp
 
-[![CI](https://github.com/dandehoon/unimcp/actions/workflows/ci.yml/badge.svg)](https://github.com/dandehoon/unimcp/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/@dandehoon/unimcp)](https://www.npmjs.com/package/@dandehoon/unimcp)
+A local MCP aggregator. One config, one daemon, per-client tool control.
 
-One MCP endpoint for all your servers.
+## Why
 
-Instead of registering Context7, Searxng, your internal API, and a dozen others separately in every editor, configure them once and point every editor at unimcp. All tools are merged under a single endpoint — prefixed as `serverName__toolName` to avoid collisions.
+MCP clients duplicate config. Every client that speaks MCP (Claude Code, Cursor, VS Code, OpenCode, custom agents) needs its own copy of the same server definitions. Change a server, update N configs.
+
+Centralized MCP servers solve duplication but create a new problem: tool visibility is controlled server-side. You either expose everything, or manage static profiles in the server config. Switching what a client sees means editing the server.
+
+Docker-based MCP servers add another pain point: poor lifecycle management. Stdio containers can hang indefinitely, orphaned processes pile up, and there's no shared daemon to manage them.
+
+unimcp fixes these:
+
+- **One config** — define all MCP servers in a single `unimcp.json`. Every client connects through unimcp.
+- **Auto daemon** — a shared background process manages all upstream connections. Auto-spawns on first use, auto-shuts down after 30s idle, hot-reloads on config change. No orphaned Docker containers or zombie stdio processes. Different environment contexts automatically get separate daemon instances.
+- **Client-side tool control** — because clients share a daemon, each one can declare what tools it sees via `UNIMCP_INCLUDE`/`UNIMCP_EXCLUDE` env vars. No server-side profiles to manage.
+
+```
+ Claude Code ──┐                        ┌── context7 (http)
+               │    ┌──────────────┐    │
+ Cursor ───────┼───►│   unimcp     │────┼── searxng (docker/stdio)
+               │    │   daemon     │    │
+ VS Code ──────┤    └──────────────┘    └── github-mcp (stdio)
+               │         ▲
+ Any client ───┘    auto-spawn / auto-shutdown / hot-reload
+```
+
+Different `${VAR}` values automatically get separate daemons:
+
+```
+Client A (GITHUB_TOKEN=abc) ──┐
+                               ├──► daemon instance 1
+Client B (GITHUB_TOKEN=abc) ──┘
+
+Client C (GITHUB_TOKEN=xyz) ──────► daemon instance 2
+```
 
 ## Quick start
 
-```bash
-# Register in your editors (creates config if missing)
-npx @dandehoon/unimcp setup
+### 1. Install
 
-# Add your first server
-npx @dandehoon/unimcp add context7 --type http --url https://mcp.context7.com/mcp
+```bash
+npm install -g @dandehoon/unimcp
 ```
 
-That's it. Restart your editor and all `context7__*` tools are available.
-
-## Cheatsheet
+Or run directly without installing:
 
 ```bash
-# Manage servers
-unimcp list                             # show all servers
-unimcp get context7                     # inspect one server
+npx @dandehoon/unimcp
+```
+
+### 2. Create config
+
+Add servers via CLI (similar to `claude mcp`):
+
+```bash
 unimcp add context7 --type http --url https://mcp.context7.com/mcp
-unimcp add searxng --command docker --args "run,-i,--rm,dandehoon/searxng-mcp:edge"
-unimcp add-json my-api '{"type":"http","url":"https://example.com/mcp","headers":{"Authorization":"Bearer ${TOKEN}"}}'
-unimcp remove searxng                   # remove a server
-
-# Setup
-unimcp setup                            # register in editors (local, project-level)
-unimcp setup --global                   # register globally
-unimcp setup --global --target claude,copilot
-
-# Inspect
-unimcp status                           # show daemon status and loaded tools
-
-# Import from editors
-unimcp collect                          # print merged config from all installed editors
-unimcp collect --save                   # write to ~/.config/unimcp/mcp.json
+unimcp add searxng --command docker --args "run,-i,--rm,dandehoon/searxng-mcp:latest"
+unimcp add github --command npx --args "-y,@modelcontextprotocol/server-github" --env GITHUB_TOKEN='${GITHUB_TOKEN}'
+unimcp list
 ```
 
-Config changes hot-reload — no restart needed.
-
-## Configuration
-
-Default config: `~/.config/unimcp/mcp.json`. Override with `--mcp-file` or `UNIMCP_CONFIG`.
+Or create `unimcp.json` directly — the format uses the same `mcpServers` schema as Claude Code, Cursor, and Copilot, so you can copy an existing config and it works as-is:
 
 ```json
 {
@@ -58,81 +72,135 @@ Default config: `~/.config/unimcp/mcp.json`. Override with `--mcp-file` or `UNIM
     },
     "searxng": {
       "command": "docker",
-      "args": ["run", "-i", "--rm", "dandehoon/searxng-mcp:edge"]
-    },
-    "my-api": {
-      "type": "http",
-      "url": "https://example.com/mcp",
-      "headers": { "Authorization": "Bearer ${MY_TOKEN}" }
+      "args": ["run", "-i", "--rm", "dandehoon/searxng-mcp:latest"]
     }
   }
 }
 ```
 
-`${VAR}` references are expanded from the process environment at load time. Set secrets in your shell profile — `.env` files are not auto-loaded.
+Already have MCP servers configured in your clients? Import them all at once:
 
-### Per-client tool filtering
+```bash
+unimcp collect --save
+```
 
-Control which tools each editor sees:
+### 3. Register with your client
 
-```json
+```bash
+unimcp setup                          # all supported clients in current project
+unimcp setup --target=claude          # specific client only
+unimcp setup --global                 # user-level config
+```
+
+Supported targets: `claude`, `cursor`, `copilot`, `opencode`.
+
+Done. Your clients now connect through unimcp instead of spawning servers directly.
+
+## Configuration
+
+The `unimcp.json` format extends the standard `mcpServers` schema used by Claude Code, Cursor, and other MCP clients. You can drop in an existing config and it works as-is.
+
+Config is resolved in this order: `./unimcp.json` (local) > `--mcp-file` flag / `UNIMCP_CONFIG` env > `~/.config/unimcp/unimcp.json` (global).
+
+`${VAR}` references are expanded from your shell environment at load time.
+
+```jsonc
 {
-  "mcpServers": { ... },
-  "clients": {
-    "claude":   { "tools": { "exclude": ["searxng__*"] } },
-    "copilot":  { "tools": { "exclude": ["searxng__*", "fetch__*"] } },
-    "opencode": { "tools": { "include": ["*"] } }
+  "mcpServers": {
+    // HTTP server
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp",
+    },
+    // Stdio server (Docker)
+    "searxng": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "dandehoon/searxng-mcp:latest"],
+    },
+    // Stdio server with env vars and tool filtering
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" },
+      "include": ["search_*", "get_*"],
+    },
+    // Disabled server (kept in config, not connected)
+    "experimental": {
+      "command": "npx",
+      "args": ["-y", "experimental-mcp"],
+      "enabled": false,
+    },
+  },
+}
+```
+
+### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `UNIMCP_CONFIG` | Config file path |
+| `UNIMCP_PORT` | Daemon port (default: 4848) |
+| `UNIMCP_HOST` | Daemon host (default: 127.0.0.1) |
+| `UNIMCP_INCLUDE` | Comma-separated glob patterns; only matching tools are visible |
+| `UNIMCP_EXCLUDE` | Comma-separated glob patterns; matching tools are hidden |
+
+### Per-client tool control
+
+Each client controls its own view via environment variables, no server-side config needed:
+
+```jsonc
+// Claude Code (.mcp.json) — sees everything (no filter)
+{
+  "mcpServers": {
+    "unimcp": { "command": "unimcp" }
+  }
+}
+
+// Cursor (.cursor/mcp.json) — excludes internal tools
+{
+  "mcpServers": {
+    "unimcp": {
+      "command": "unimcp",
+      "env": { "UNIMCP_EXCLUDE": "internal__*" }
+    }
   }
 }
 ```
 
-`unimcp setup` injects `UNIMCP_CLIENT` into each editor's registration automatically.
-
-| Editor | Client name |
-|--------|-------------|
-| Claude Code | `claude` |
-| Cursor | `cursor` |
-| VS Code / GitHub Copilot | `copilot` |
-| OpenCode | `opencode` |
-
-## Setup
-
-Writes the registration entry into your editor config. Re-running is safe — already-registered targets are skipped.
-
-| Target | Local (cwd) | Global |
-|--------|-------------|--------|
-| `claude` | `.mcp.json` | `~/.claude.json` |
-| `cursor` | `.cursor/mcp.json` | `~/.cursor/mcp.json` |
-| `copilot` | `.vscode/mcp.json` | `~/Library/Application Support/Code/User/mcp.json` |
-| `opencode` | _(none)_ | `~/.config/opencode/opencode.json` |
-
-## Install
+`UNIMCP_INCLUDE` and `UNIMCP_EXCLUDE` accept comma-separated glob patterns using `serverName__toolName` format:
 
 ```bash
-npm install -g @dandehoon/unimcp
+UNIMCP_INCLUDE=github__*,context7__*    # only these tools
+UNIMCP_EXCLUDE=internal__*              # everything except these
 ```
 
-Or run without installing:
+Both server-level and client-level filters are AND-ed: a tool must pass both to be visible.
 
-```bash
-npx @dandehoon/unimcp setup
+## Commands
+
 ```
-
-## Environment variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `UNIMCP_PORT` | `4848` | HTTP server preferred port |
-| `UNIMCP_HOST` | `127.0.0.1` | HTTP server bind address |
-| `UNIMCP_CONFIG` | `~/.config/unimcp/mcp.json` | Config file path |
-| `UNIMCP_CLIENT` | _(unset)_ | Client identity for per-client tool filtering |
+unimcp                     Stdio mode (auto daemon + bridge)
+unimcp --http              Run as HTTP daemon directly
+unimcp status              Show running daemons and loaded tools
+unimcp setup               Register in client configs
+unimcp collect             Merge MCP configs from all clients into one
+unimcp list                List servers in config
+unimcp get <name>          Show server details
+unimcp add <name>          Add a server
+unimcp add-json <name>     Add a server from JSON
+unimcp remove <name>       Remove a server
+```
 
 ## Development
 
 ```bash
-pnpm dev             # stdio mode (bun, no compile)
-pnpm typecheck       # tsc --noEmit
-pnpm test            # bun test
-pnpm bundle          # build dist/unimcp.js (Node.js bundle)
-pnpm install-bin     # compile + install to /usr/local/bin/unimcp
+pnpm install
+pnpm dev            # stdio mode
+pnpm http           # HTTP daemon
+pnpm typecheck      # tsc --noEmit
+pnpm test           # bun test
 ```
+
+## License
+
+MIT

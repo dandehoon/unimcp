@@ -1,9 +1,9 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync } from "fs";
 import path from "path";
-import os from "os";
-import { stripJsonComments } from "./utils.js";
 
-const HOME = os.homedir();
+import { VSCODE_MCP_PATH, CLAUDE_GLOBAL_PATH, CURSOR_GLOBAL_PATH, OPENCODE_PATH } from "./config.js";
+import { stripJsonComments, log, readFileSafe, parseJsonSafe, toJson, writeFileSafe, PERMS_PUBLIC } from "./utils.js";
+
 const CWD = process.cwd();
 const SERVER_NAME = "unimcp";
 const SYSTEM_BIN_PATH = "/usr/local/bin/unimcp";
@@ -17,35 +17,35 @@ type TargetDef = {
   label: string;
   globalConfigPath: string;
   localConfigPath: string | null;
-  inject: (raw: string, binPath: string, clientId: string) => string;
+  inject: (raw: string, binPath: string) => string;
 };
 
 const TARGETS: TargetDef[] = [
   {
     id: "claude",
     label: "Claude Code",
-    globalConfigPath: path.join(HOME, ".claude.json"),
+    globalConfigPath: CLAUDE_GLOBAL_PATH,
     localConfigPath: path.join(CWD, ".mcp.json"),
     inject: injectMcpServers,
   },
   {
     id: "cursor",
     label: "Cursor",
-    globalConfigPath: path.join(HOME, ".cursor", "mcp.json"),
+    globalConfigPath: CURSOR_GLOBAL_PATH,
     localConfigPath: path.join(CWD, ".cursor", "mcp.json"),
     inject: injectMcpServers,
   },
   {
     id: "copilot",
     label: "VS Code / GitHub Copilot",
-    globalConfigPath: path.join(HOME, "Library", "Application Support", "Code", "User", "mcp.json"),
+    globalConfigPath: VSCODE_MCP_PATH,
     localConfigPath: path.join(CWD, ".vscode", "mcp.json"),
     inject: injectVsCodeServers,
   },
   {
     id: "opencode",
     label: "OpenCode",
-    globalConfigPath: path.join(HOME, ".config", "opencode", "opencode.json"),
+    globalConfigPath: OPENCODE_PATH,
     localConfigPath: null,
     inject: injectOpenCode,
   },
@@ -53,15 +53,18 @@ const TARGETS: TargetDef[] = [
 
 // --- public entry point ---
 
-export async function runSetup(argv: string[]): Promise<void> {
+export type SetupOpts = {
+  isGlobal: boolean;
+  targets: string[] | null;
+};
+
+export async function runSetup(opts: SetupOpts): Promise<void> {
   const binPath = resolveUnimcpBin();
-  const isGlobal = argv.includes("--global");
-  const targetFilter = parseTargetFlag(argv);
-  const forceWrite = targetFilter !== null;
+  const forceWrite = opts.targets !== null;
 
-  const targets = TARGETS.filter((t) => targetFilter === null || targetFilter.includes(t.id));
+  const targets = TARGETS.filter((t) => opts.targets === null || opts.targets.includes(t.id));
 
-  if (isGlobal) {
+  if (opts.isGlobal) {
     registerGlobal(targets, binPath, forceWrite);
   } else {
     registerLocal(targets, binPath);
@@ -74,12 +77,12 @@ function registerLocal(targets: TargetDef[], binPath: string): void {
   const localTargets = targets.filter((t) => t.localConfigPath !== null);
 
   if (localTargets.length === 0) {
-    console.error("[setup] no targets support project-level config (try --global)");
+    log("[setup] no targets support project-level config (try --global)");
     return;
   }
 
   for (const target of localTargets) {
-    registerTarget(target.label, target.localConfigPath!, binPath, target.inject, target.id);
+    registerTarget({ label: target.label, configPath: target.localConfigPath!, binPath, inject: target.inject, force: true });
   }
 }
 
@@ -88,41 +91,42 @@ function registerGlobal(targets: TargetDef[], binPath: string, force: boolean): 
 
   for (const target of targets) {
     const configPath = target.globalConfigPath;
-
-    if (!force && !existsSync(configPath)) {
-      console.error(`[setup] ${target.label}: config not found — skipped (use --target to force)`);
-      continue;
-    }
-
-    registerTarget(target.label, configPath, binPath, target.inject, target.id);
-    registered++;
+    const did = registerTarget({ label: target.label, configPath, binPath, inject: target.inject, force });
+    if (did) registered++;
   }
 
   if (registered === 0) {
-    console.error("[setup] no global configs found — run 'unimcp setup' (local) instead");
+    log("[setup] no global configs found — run 'unimcp setup' (local) instead");
   }
 }
 
-function registerTarget(
-  label: string,
-  configPath: string,
-  binPath: string,
-  inject: (raw: string, binPath: string, clientId: string) => string,
-  clientId: string,
-): void {
-  const fileExists = existsSync(configPath);
-  mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o755 });
+type RegisterTargetOpts = {
+  label: string;
+  configPath: string;
+  binPath: string;
+  inject: (raw: string, binPath: string) => string;
+  force?: boolean;
+};
 
-  const existing = fileExists ? readFileSync(configPath, "utf-8") : "";
-  const updated = inject(existing, binPath, clientId);
+function registerTarget(opts: RegisterTargetOpts): boolean {
+  const raw = readFileSafe(opts.configPath);
 
-  if (updated === existing) {
-    console.error(`[setup] ${label}: already registered — skipped`);
-    return;
+  if (!opts.force && raw === null) {
+    log(`[setup] ${opts.label}: config not found — skipped (use --target to force)`);
+    return false;
   }
 
-  writeFileSync(configPath, updated, { encoding: "utf-8", mode: 0o644 });
-  console.error(`[setup] ${label}: registered at ${configPath}`);
+  const existing = raw ?? "";
+  const updated = opts.inject(existing, opts.binPath);
+
+  if (updated === existing) {
+    log(`[setup] ${opts.label}: already registered — skipped`);
+    return true;
+  }
+
+  writeFileSafe(opts.configPath, updated, PERMS_PUBLIC);
+  log(`[setup] ${opts.label}: registered at ${opts.configPath}`);
+  return true;
 }
 
 function resolveUnimcpBin(): string {
@@ -130,47 +134,37 @@ function resolveUnimcpBin(): string {
   return process.execPath;
 }
 
-function parseTargetFlag(argv: string[]): TargetId[] | null {
-  const flag = argv.find((a) => a.startsWith("--target=") || a === "--target");
-  if (!flag) return null;
-
-  const raw = flag.includes("=") ? flag.split("=")[1] : argv[argv.indexOf(flag) + 1];
-  if (!raw) return null;
-
-  return raw.split(",").map((s) => s.trim()) as TargetId[];
+export function injectMcpServers(raw: string, binPath: string): string {
+  return injectEntry(raw, { key: "mcpServers", entry: { command: binPath } });
 }
 
-export function injectMcpServers(raw: string, binPath: string, clientId: string): string {
-  const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
-  const servers = (config["mcpServers"] ?? {}) as Record<string, unknown>;
-
-  if (servers[SERVER_NAME]) return raw;
-
-  servers[SERVER_NAME] = { command: binPath, env: { UNIMCP_CLIENT: clientId } };
-  config["mcpServers"] = servers;
-  return JSON.stringify(config, null, 2) + "\n";
-}
-
-export function injectVsCodeServers(raw: string, binPath: string, clientId: string): string {
+export function injectVsCodeServers(raw: string, binPath: string): string {
   const stripped = stripJsonComments(raw);
-  const config = stripped.trim() ? (JSON.parse(stripped) as Record<string, unknown>) : {};
-  const servers = (config["servers"] ?? {}) as Record<string, unknown>;
-
-  if (servers[SERVER_NAME]) return raw;
-
-  servers[SERVER_NAME] = { type: "stdio", command: binPath, args: [], env: { UNIMCP_CLIENT: clientId } };
-  config["servers"] = servers;
-  if (!config["inputs"]) config["inputs"] = [];
-  return JSON.stringify(config, null, 2) + "\n";
+  const updated = injectEntry(stripped, { key: "servers", entry: { type: "stdio", command: binPath, args: [] }, mutate: ensureVsCodeInputs });
+  return updated === stripped ? raw : updated;
 }
 
-export function injectOpenCode(raw: string, binPath: string, clientId: string): string {
-  const config = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
-  const mcp = (config["mcp"] ?? {}) as Record<string, unknown>;
+export function injectOpenCode(raw: string, binPath: string): string {
+  return injectEntry(raw, { key: "mcp", entry: { type: "local", command: [binPath], enabled: true } });
+}
 
-  if (mcp[SERVER_NAME]) return raw;
+// --- helpers ---
 
-  mcp[SERVER_NAME] = { type: "local", command: [binPath], enabled: true, env: { UNIMCP_CLIENT: clientId } };
-  config["mcp"] = mcp;
-  return JSON.stringify(config, null, 2) + "\n";
+function ensureVsCodeInputs(config: Record<string, unknown>): void {
+  if (!config["inputs"]) config["inputs"] = [];
+}
+
+type ConfigMutator = (config: Record<string, unknown>) => void;
+type InjectEntryOpts = { key: string; entry: unknown; mutate?: ConfigMutator };
+
+function injectEntry(raw: string, opts: InjectEntryOpts): string {
+  const config = raw.trim() ? (parseJsonSafe<Record<string, unknown>>(raw, "editor config") ?? {}) : {};
+  const section = (config[opts.key] ?? {}) as Record<string, unknown>;
+
+  if (section[SERVER_NAME]) return raw;
+
+  section[SERVER_NAME] = opts.entry;
+  config[opts.key] = section;
+  opts.mutate?.(config);
+  return toJson(config);
 }
