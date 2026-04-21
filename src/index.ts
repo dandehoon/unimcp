@@ -13,8 +13,6 @@ import type { AddOpts } from "./mcp.js";
 import { log, splitCommaSeparated, collectRepeatable } from "./utils.js";
 
 const LOCAL_MCP_FILE = path.join(process.cwd(), "unimcp.json");
-const PORT = Number(process.env.UNIMCP_PORT ?? process.env.PORT ?? 4848);
-const HOST = process.env.UNIMCP_HOST ?? process.env.HOST ?? "127.0.0.1";
 
 const LOCAL_FILE_EXISTS = existsSync(LOCAL_MCP_FILE);
 const ENV_CONFIG = process.env.UNIMCP_CONFIG;
@@ -28,17 +26,21 @@ program
   .option("--env-hash <hash>", "Env hash override (internal)")
   .option("--http", "Start as managed HTTP server")
   .option("--daemon", "Alias for --http")
-  .action(async (opts: { mcpFile?: string; envHash?: string; http?: boolean; daemon?: boolean }) => {
+  .option("--port <number>", "Port for the HTTP server (default: UNIMCP_PORT env or 4848)")
+  .option("--host <string>", "Host for the HTTP server (default: UNIMCP_HOST env or 127.0.0.1)")
+  .action(async (opts: { mcpFile?: string; envHash?: string; http?: boolean; daemon?: boolean; port?: string; host?: string }) => {
+    const port = opts.port !== undefined ? Number(opts.port) : Number(process.env.UNIMCP_PORT ?? process.env.PORT ?? 4848);
+    const host = opts.host ?? process.env.UNIMCP_HOST ?? process.env.HOST ?? "127.0.0.1";
     const configPath = resolveConfigPath(opts.mcpFile);
     const envHash = resolveEnvHash(opts.envHash, configPath);
 
     if (opts.http ?? opts.daemon) {
-      await startManagedServer({ port: PORT, host: HOST, configPath, envHash });
+      await startManagedServer({ port, host, configPath, envHash });
       return;
     }
 
-    const actualPort = await ensureDaemon({ port: PORT, host: HOST, configPath, envHash });
-    await runBridge({ port: actualPort, host: HOST, configPath });
+    const actualPort = await ensureDaemon({ port, host, configPath, envHash });
+    await runBridge({ port: actualPort, host, configPath });
   });
 
 program
@@ -48,7 +50,7 @@ program
     const g = globalOpts(cmd);
     const configPath = resolveConfigPath(g.mcpFile);
     const envHash = resolveEnvHash(g.envHash, configPath);
-    await runStatus({ envHash, host: HOST, configPath });
+    await runStatus({ envHash, host: process.env.UNIMCP_HOST ?? process.env.HOST ?? "127.0.0.1", configPath });
   });
 
 program

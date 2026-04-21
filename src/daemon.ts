@@ -56,8 +56,8 @@ async function startDaemon(opts: DaemonOptions): Promise<number> {
   const isCompiled = execPath === scriptArg || scriptArg.includes("$bunfs");
 
   const [cmd, cmdArgs] = isCompiled
-    ? [execPath, ["--http", "--mcp-file", opts.configPath, "--env-hash", opts.envHash]]
-    : [execPath, [scriptArg, "--http", "--mcp-file", opts.configPath, "--env-hash", opts.envHash]];
+    ? [execPath, ["--http", "--mcp-file", opts.configPath, "--env-hash", opts.envHash, "--port", String(opts.port), "--host", opts.host]]
+    : [execPath, [scriptArg, "--http", "--mcp-file", opts.configPath, "--env-hash", opts.envHash, "--port", String(opts.port), "--host", opts.host]];
 
   const child = spawn(cmd, cmdArgs, {
     detached: true,

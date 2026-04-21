@@ -87,9 +87,10 @@ export function computeEnvHash(filePath: string): string {
   for (const match of content.matchAll(ENV_VAR_RE)) {
     varNames.add(match[1]);
   }
-  const record = Object.fromEntries(
-    [...varNames].sort().map((name) => [name, process.env[name] ?? ""]),
-  );
+  const record: Record<string, string> = { __config: path.resolve(filePath) };
+  for (const name of [...varNames].sort()) {
+    record[name] = process.env[name] ?? "";
+  }
   return createHash("sha256").update(JSON.stringify(record)).digest("hex").slice(0, 8);
 }
 
