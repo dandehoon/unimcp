@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { readFileSync } from "fs";
 import path from "path";
 import os from "os";
+import { stripJsonComments } from "./utils.js";
 
 const MAX_CONFIG_BYTES = 1_048_576; // 1 MB
 
@@ -71,7 +72,7 @@ export function resolveMcpFile(opts: ResolveMcpFileOpts): string {
 }
 
 export function loadConfig(filePath: string): Config {
-  const raw = readRawConfig(filePath);
+  const raw = stripJsonComments(readRawConfig(filePath));
   const expanded = raw.replace(ENV_VAR_RE, (_match: string, name: string) => process.env[name] ?? "");
   return JSON.parse(expanded) as Config;
 }

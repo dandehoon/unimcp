@@ -40,7 +40,7 @@ program
     }
 
     const actualPort = await ensureDaemon({ port, host, configPath, envHash });
-    await runBridge({ port: actualPort, host, configPath });
+    await runBridge({ port: actualPort, host, configPath, envHash });
   });
 
 program

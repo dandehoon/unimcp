@@ -63,10 +63,22 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
 
   function scheduleShutdown() {
     if (idleTimer) return;
+    const scheduledAt = Date.now();
     idleTimer = setTimeout(() => {
+      idleTimer = null;
+      if (Date.now() - scheduledAt < IDLE_TIMEOUT_MS - 500) {
+        log("[server] timer fired early (possible sleep) — rescheduling");
+        scheduleShutdown();
+        return;
+      }
+      if (aggregator?.isReconnecting()) {
+        log("[server] aggregator reconnecting — deferring shutdown");
+        scheduleShutdown();
+        return;
+      }
       log(`[server] no active sessions for ${IDLE_TIMEOUT_MS / 1_000} s — shutting down`);
       tryUnlink(pidFile);
-      aggregator?.disconnect().catch(() => {}).finally(() => process.exit(0));
+      aggregator?.disconnect().catch((err) => log("[server] disconnect error:", String(err))).finally(() => process.exit(0));
       setTimeout(() => process.exit(0), FORCE_EXIT_TIMEOUT_MS).unref();
     }, IDLE_TIMEOUT_MS);
   }
@@ -81,6 +93,17 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   const httpServer = http.createServer(async (req, res) => {
     if (req.url === "/health") {
       res.writeHead(200).end("ok");
+      return;
+    }
+
+    if (req.url === "/status") {
+      const status = {
+        pid: process.pid,
+        uptime: Math.floor(process.uptime()),
+        activeSessions,
+        upstreams: aggregator?.getStatus() ?? [],
+      };
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(status));
       return;
     }
 
@@ -207,11 +230,7 @@ function listenWithFallback(
   host: string
 ): Promise<number> {
   return new Promise((resolve, reject) => {
-    server.listen(preferredPort, host, () => {
-      resolve((server.address() as { port: number }).port);
-    });
-
-    server.once("error", (err: NodeJS.ErrnoException) => {
+    const onError = (err: NodeJS.ErrnoException) => {
       if (err.code !== "EADDRINUSE") {
         reject(err);
         return;
@@ -220,6 +239,13 @@ function listenWithFallback(
       server.listen(0, host, () => {
         resolve((server.address() as { port: number }).port);
       });
+    };
+
+    server.once("error", onError);
+
+    server.listen(preferredPort, host, () => {
+      server.removeListener("error", onError);
+      resolve((server.address() as { port: number }).port);
     });
   });
 }

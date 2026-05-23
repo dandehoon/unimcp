@@ -11,26 +11,63 @@ import {
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE } from "./config.js";
 import { SEP } from "./aggregator.js";
+import { ensureDaemon } from "./daemon.js";
 import { log, MCP_SERVER_IDENTITY } from "./utils.js";
 
 export type BridgeOptions = {
   port: number;
   host: string;
   configPath: string;
+  envHash: string;
 };
 
+const RECONNECT_COOLDOWN_MS = 5_000;
+const TRANSPORT_ERROR_PATTERNS = [
+  "econnrefused", "econnreset", "epipe", "timed out", "fetch failed",
+  "session not found", "no valid session", "session-id header is required", "server not initialized",
+];
+
 export async function runBridge(opts: BridgeOptions): Promise<void> {
-  const daemonUrl = new URL(`http://${opts.host}:${opts.port}/mcp`);
+  let daemonUrl = new URL(`http://${opts.host}:${opts.port}/mcp`);
   const headers = buildFilterHeaders();
 
-  const client = new Client({ name: "unimcp-bridge", version: MCP_SERVER_IDENTITY.version });
-  const clientTransport = new StreamableHTTPClientTransport(daemonUrl, {
-    requestInit: headers ? { headers } : undefined,
-  });
-  await client.connect(clientTransport);
+  let client = await createClient(daemonUrl, headers);
+  let lastReconnectAt = 0;
 
   const initialTools = await client.listTools();
   logConnectionStatus(initialTools.tools, opts.configPath);
+
+  async function reconnect(): Promise<void> {
+    const now = Date.now();
+    if (now - lastReconnectAt < RECONNECT_COOLDOWN_MS) {
+      throw new Error("[bridge] reconnect cooldown — skipping");
+    }
+    lastReconnectAt = now;
+    log("[bridge] attempting reconnect to daemon...");
+    client.close().catch((err) => log("[bridge] old client close error:", String(err)));
+    try {
+      client = await createClient(daemonUrl, headers);
+      log("[bridge] reconnected successfully");
+    } catch {
+      // Daemon is likely dead — attempt re-spawn
+      log("[bridge] daemon unreachable — re-spawning...");
+      const newPort = await ensureDaemon({ port: opts.port, host: opts.host, configPath: opts.configPath, envHash: opts.envHash });
+      daemonUrl = new URL(`http://${opts.host}:${newPort}/mcp`);
+      client = await createClient(daemonUrl, headers);
+      log(`[bridge] daemon re-spawned on port ${newPort}`);
+    }
+  }
+
+  async function withReconnect<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof McpError) throw err;
+      if (!isTransportError(err)) throw err;
+      await reconnect();
+      return await fn();
+    }
+  }
 
   const server = new Server(
     MCP_SERVER_IDENTITY,
@@ -39,7 +76,7 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     try {
-      const result = await client.listTools();
+      const result = await withReconnect(() => client.listTools());
       return { tools: result.tools };
     } catch (err) {
       if (err instanceof McpError) throw err;
@@ -50,9 +87,8 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
     try {
-      return await client.callTool({ name, arguments: args ?? {} });
+      return await withReconnect(() => client.callTool({ name, arguments: args ?? {} }));
     } catch (err) {
-      // Preserve upstream error codes (e.g. InvalidParams) rather than flattening to InternalError.
       if (err instanceof McpError) throw err;
       throw new McpError(ErrorCode.InternalError, `[bridge] callTool failed: ${String(err)}`);
     }
@@ -66,7 +102,7 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   function shutdown(): void {
     if (exiting) return;
     exiting = true;
-    client.close().catch(() => {});
+    client.close().catch((err) => log("[bridge] close error:", String(err)));
     process.exit(0);
   }
 
@@ -76,6 +112,23 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
 }
 
 // --- helpers ---
+
+async function createClient(
+  daemonUrl: URL,
+  headers: Record<string, string> | undefined,
+): Promise<Client> {
+  const client = new Client({ name: "unimcp-bridge", version: MCP_SERVER_IDENTITY.version });
+  const transport = new StreamableHTTPClientTransport(daemonUrl, {
+    requestInit: headers ? { headers } : undefined,
+  });
+  await client.connect(transport);
+  return client;
+}
+
+function isTransportError(err: unknown): boolean {
+  const msg = String(err).toLowerCase();
+  return TRANSPORT_ERROR_PATTERNS.some((p) => msg.includes(p));
+}
 
 function buildFilterHeaders(): Record<string, string> | undefined {
   const include = process.env["UNIMCP_INCLUDE"];

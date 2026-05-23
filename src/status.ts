@@ -1,17 +1,21 @@
 import { readdirSync } from "fs";
 import path from "path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { CONFIG_DIR } from "./config.js";
-import { SEP } from "./aggregator.js";
+import type { UpstreamStatus } from "./aggregator.js";
 import { parsePidFile, isAlive } from "./daemon.js";
-import { log, MCP_SERVER_IDENTITY } from "./utils.js";
+import { log } from "./utils.js";
 
 export type StatusOptions = {
   envHash: string;
   host: string;
   configPath: string;
+};
+
+type DaemonStatus = {
+  pid: number;
+  uptime: number;
+  activeSessions: number;
+  upstreams: UpstreamStatus[];
 };
 
 export async function runStatus(opts: StatusOptions): Promise<void> {
@@ -65,49 +69,74 @@ async function checkDaemon(
   log(`Daemon ${envHash}  PID ${pid}  http://${opts.host}:${port}/mcp`);
   log(`Config ${configLabel}`);
 
-  const client = new Client({ name: "unimcp-status", version: MCP_SERVER_IDENTITY.version });
-  try {
-    await client.connect(
-      new StreamableHTTPClientTransport(new URL(`http://${opts.host}:${port}/mcp`))
-    );
-  } catch (err) {
-    log(`  [unreachable: ${String(err)}]`);
-    return;
-  }
+  const status = await fetchStatus(opts.host, port);
+  if (!status) return;
 
-  let tools: Tool[];
-  try {
-    const result = await client.listTools();
-    tools = result.tools;
-  } catch (err) {
-    log(`  [listTools failed: ${String(err)}]`);
-    await client.close();
-    return;
-  }
-
-  await client.close();
-  printTools(tools);
+  log(`Uptime ${formatDuration(status.uptime)}  Sessions ${status.activeSessions}`);
+  printUpstreams(status.upstreams);
 }
 
 // --- helpers ---
 
-function printTools(tools: Tool[]): void {
-  const map = new Map<string, string[]>();
+async function fetchStatus(host: string, port: number): Promise<DaemonStatus | null> {
+  try {
+    const res = await fetch(`http://${host}:${port}/status`);
+    if (!res.ok) {
+      log(`  [status endpoint returned ${res.status}]`);
+      return null;
+    }
+    return await res.json() as DaemonStatus;
+  } catch (err) {
+    log(`  [unreachable: ${String(err)}]`);
+    return null;
+  }
+}
 
-  for (const tool of tools) {
-    const sepIdx = tool.name.indexOf(SEP);
-    const upstream = sepIdx === -1 ? "(unknown)" : tool.name.slice(0, sepIdx);
-    const name = sepIdx === -1 ? tool.name : tool.name.slice(sepIdx + SEP.length);
-    let names = map.get(upstream);
-    if (!names) { names = []; map.set(upstream, names); }
-    names.push(name);
+function printUpstreams(upstreams: UpstreamStatus[]): void {
+  if (upstreams.length === 0) {
+    log("  No upstreams configured");
+    return;
   }
 
-  log(`Tools  ${tools.length} across ${map.size} upstream(s)`);
-  for (const [upstream, names] of map) {
-    log(`  ${upstream}  (${names.length})`);
-    for (const name of names) {
-      log(`    ${name}`);
+  const totalTools = upstreams.reduce((sum, u) => sum + u.toolCount, 0);
+  const connected = upstreams.filter((u) => u.state === "connected").length;
+  log(`Upstreams  ${connected}/${upstreams.length} connected  ${totalTools} tools`);
+
+  for (const u of upstreams) {
+    const stateIcon = stateSymbol(u.state);
+    const toolInfo = u.toolCount > 0 ? `${u.toolCount} tools` : "0 tools";
+    const connInfo = u.connectedAt ? `since ${formatTimestamp(u.connectedAt)}` : "";
+    log(`  ${stateIcon} ${u.name}  ${toolInfo}  ${connInfo}`);
+
+    if (u.state === "failed" || u.state === "reconnecting") {
+      const detail = u.lastError ? `${u.lastError}` : "";
+      const when = u.lastErrorAt ? ` (${formatTimestamp(u.lastErrorAt)})` : "";
+      const retries = u.reconnectAttempts > 0 ? `  retries: ${u.reconnectAttempts}` : "";
+      if (detail) log(`    error: ${detail}${when}${retries}`);
     }
   }
+}
+
+function stateSymbol(state: UpstreamStatus["state"]): string {
+  switch (state) {
+    case "connected": return "+";
+    case "failed": return "x";
+    case "reconnecting": return "~";
+    case "disconnected": return "-";
+  }
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const h = Math.floor(seconds / 3_600);
+  const m = Math.floor((seconds % 3_600) / 60);
+  return `${h}h ${m}m`;
+}
+
+function formatTimestamp(ms: number): string {
+  const ago = Math.floor((Date.now() - ms) / 1_000);
+  if (ago < 60) return `${ago}s ago`;
+  if (ago < 3_600) return `${Math.floor(ago / 60)}m ago`;
+  return `${Math.floor(ago / 3_600)}h ago`;
 }

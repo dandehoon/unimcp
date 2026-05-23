@@ -55,6 +55,10 @@ async function startDaemon(opts: DaemonOptions): Promise<number> {
   const scriptArg = process.argv[1] ?? "";
   const isCompiled = execPath === scriptArg || scriptArg.includes("$bunfs");
 
+  if (!isCompiled && !scriptArg) {
+    throw new Error("Cannot determine script path — process.argv[1] is empty");
+  }
+
   const [cmd, cmdArgs] = isCompiled
     ? [execPath, ["--http", "--mcp-file", opts.configPath, "--env-hash", opts.envHash, "--port", String(opts.port), "--host", opts.host]]
     : [execPath, [scriptArg, "--http", "--mcp-file", opts.configPath, "--env-hash", opts.envHash, "--port", String(opts.port), "--host", opts.host]];

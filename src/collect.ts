@@ -121,7 +121,7 @@ function mapVsCodeServer(srv: Record<string, unknown>): ServerConfig {
 }
 
 function mapOpenCodeServer(srv: Record<string, unknown>): ServerConfig | null {
-  if (!srv["enabled"]) return null;
+  if (srv["enabled"] !== true) return null;
   const cmd = srv["command"];
   if (!Array.isArray(cmd) || cmd.length === 0) return null;
   return { command: String(cmd[0]), args: cmd.slice(1).map(String) } as ServerConfig;
