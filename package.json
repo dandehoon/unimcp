@@ -24,7 +24,7 @@
     "daemon": "bun run src/index.ts --daemon",
     "bundle": "bun build --bundle --target=node --minify --outfile dist/unimcp.js src/index.ts",
     "build": "bun build --compile --minify src/index.ts --outfile dist/unimcp && rm -f ./*.bun-build",
-    "install-bin": "pnpm build && cp dist/unimcp /usr/local/bin/unimcp && codesign --force --deep --sign - /usr/local/bin/unimcp"
+    "install-bin": "pnpm build && cp dist/unimcp /usr/local/bin/unimcp"
   },
   "keywords": [],
   "author": "dandehoon <nguyenbao1917@gmail.com>",
