@@ -2,9 +2,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Minimatch } from "minimatch";
-import { type Config, type ServerConfig, type ToolFilter, isHttpServer } from "./config.js";
+import { type Config, type ServerConfig, type ToolFilter, isHttpServer, isSseServer } from "./config.js";
 import { log } from "./utils.js";
 
 export const SEP = "__";
@@ -79,28 +80,24 @@ export class Aggregator {
       log(`[${name}] server name must not contain "${SEP}" — skipped`);
       return;
     }
-    const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
-    const transport = buildTransport(srv);
 
     try {
-      await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] connect timed out`);
-      const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `[${name}] listTools timed out`);
-      const filtered = tools.filter((t) => matchesFilter(t.name, serverFilter(srv)));
+      const result = await this.connectClient(name, srv);
+      const filtered = result.tools.filter((t) => matchesFilter(t.name, serverFilter(srv)));
       this.upstreams.set(name, {
-        name, client, tools: filtered, config: srv,
+        name, client: result.client, tools: filtered, config: srv,
         state: "connected", connectedAt: Date.now(),
         lastError: null, lastErrorAt: null, reconnectAttempts: 0,
       });
-      this.setupErrorHandler(name, client);
+      this.setupErrorHandler(name, result.client);
       log(`[${name}] connected (${filtered.length} tools)`);
     } catch (err) {
       log(`[${name}] failed to connect:`, err);
       this.upstreams.set(name, {
-        name, client, tools: [], config: srv,
+        name, client: new Client({ name: CLIENT_NAME, version: CLIENT_VERSION }), tools: [], config: srv,
         state: "failed", connectedAt: null,
         lastError: String(err), lastErrorAt: Date.now(), reconnectAttempts: 0,
       });
-      try { await client.close(); } catch { /* ignore */ }
       this.scheduleReconnect(name);
     }
   }
@@ -132,28 +129,25 @@ export class Aggregator {
     const entry = this.upstreams.get(name);
     if (!entry || entry.state === "disconnected") return;
 
-    const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
-    const transport = buildTransport(entry.config);
     try {
-      await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] reconnect timed out`);
-      const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `[${name}] listTools timed out`);
-      const filtered = tools.filter((t) => matchesFilter(t.name, serverFilter(entry.config)));
-      entry.client = client;
+      const result = await this.connectClient(name, entry.config);
+      const filtered = result.tools.filter((t) => matchesFilter(t.name, serverFilter(entry.config)));
+      entry.client = result.client;
       entry.tools = filtered;
       entry.state = "connected";
       entry.connectedAt = Date.now();
       entry.reconnectAttempts = 0;
       this.invalidateCache();
-      this.setupErrorHandler(name, client);
+      this.setupErrorHandler(name, result.client);
       log(`[${name}] reconnected (${filtered.length} tools)`);
     } catch (err) {
       entry.lastError = String(err);
       entry.lastErrorAt = Date.now();
-      try { await client.close(); } catch { /* ignore */ }
       if (entry.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
         entry.state = "failed";
         log(`[${name}] reconnect failed permanently:`, err);
       } else {
+        entry.state = "failed";
         this.scheduleReconnect(name);
       }
     }
@@ -198,7 +192,12 @@ export class Aggregator {
 
     const upstream = this.upstreams.get(upstreamName);
     if (!upstream) throw new Error(`Unknown upstream: ${upstreamName}`);
-    if (upstream.state !== "connected") throw new Error(`Upstream ${upstreamName} is ${upstream.state}`);
+    if (upstream.state !== "connected") {
+      await this.onDemandReconnect(upstreamName, upstream);
+      if ((upstream as UpstreamEntry).state !== "connected") {
+        throw new Error(`Upstream ${upstreamName} is ${upstream.state} (reconnect failed)`);
+      }
+    }
 
     try {
       return await withTimeout(
@@ -207,7 +206,13 @@ export class Aggregator {
         `[${upstreamName}] callTool timed out`,
       );
     } catch (err) {
-      if (isTransportError(err)) this.scheduleReconnect(upstreamName);
+      if (isTransportError(err)) {
+        upstream.state = "failed";
+        upstream.lastError = String(err);
+        upstream.lastErrorAt = Date.now();
+        this.invalidateCache();
+        this.scheduleReconnect(upstreamName);
+      }
       throw err;
     }
   }
@@ -220,6 +225,61 @@ export class Aggregator {
 
   isReconnecting(): boolean {
     return [...this.upstreams.values()].some((e) => e.state === "reconnecting");
+  }
+
+  private async onDemandReconnect(name: string, entry: UpstreamEntry): Promise<void> {
+    const timer = this.reconnectTimers.get(name);
+    if (timer) { clearTimeout(timer); this.reconnectTimers.delete(name); }
+
+    entry.reconnectAttempts = 0;
+    try {
+      const result = await this.connectClient(name, entry.config);
+      const filtered = result.tools.filter((t) => matchesFilter(t.name, serverFilter(entry.config)));
+      entry.client = result.client;
+      entry.tools = filtered;
+      entry.state = "connected";
+      entry.connectedAt = Date.now();
+      entry.reconnectAttempts = 0;
+      this.invalidateCache();
+      this.setupErrorHandler(name, result.client);
+      log(`[${name}] on-demand reconnect succeeded (${filtered.length} tools)`);
+    } catch (err) {
+      entry.lastError = String(err);
+      entry.lastErrorAt = Date.now();
+      entry.state = "failed";
+      log(`[${name}] on-demand reconnect failed:`, err);
+    }
+  }
+
+  private async connectClient(name: string, srv: ServerConfig): Promise<{ client: Client; tools: Tool[] }> {
+    const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
+    const transport = buildTransport(srv);
+    try {
+      await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] connect timed out`);
+      const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `[${name}] listTools timed out`);
+      return { client, tools };
+    } catch (err) {
+      try { await client.close(); } catch { /* ignore */ }
+      if (isHttpServer(srv) && !isAuthError(err)) {
+        return this.connectViaSSE(name, srv);
+      }
+      throw err;
+    }
+  }
+
+  private async connectViaSSE(name: string, srv: ServerConfig): Promise<{ client: Client; tools: Tool[] }> {
+    log(`[${name}] StreamableHTTP failed, trying SSE fallback…`);
+    const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
+    const transport = buildSSETransport(srv);
+    try {
+      await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] SSE connect timed out`);
+      const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `[${name}] SSE listTools timed out`);
+      log(`[${name}] connected via SSE fallback`);
+      return { client, tools };
+    } catch (err) {
+      try { await client.close(); } catch { /* ignore */ }
+      throw err;
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -243,6 +303,9 @@ function serverFilter(srv: ServerConfig): ToolFilter | undefined {
 }
 
 function buildTransport(srv: ServerConfig): Transport {
+  if (isSseServer(srv)) {
+    return buildSSETransport(srv);
+  }
   if (isHttpServer(srv)) {
     return new StreamableHTTPClientTransport(new URL(srv.url), {
       requestInit: { headers: srv.headers },
@@ -253,6 +316,23 @@ function buildTransport(srv: ServerConfig): Transport {
     args: srv.args ?? [],
     env: { ...process.env, ...srv.env } as Record<string, string>,
   });
+}
+
+function buildSSETransport(srv: ServerConfig): SSEClientTransport {
+  const headers = "headers" in srv ? srv.headers : undefined;
+  const url = new URL((srv as { url: string }).url);
+  return new SSEClientTransport(url, {
+    eventSourceInit: headers
+      ? { fetch: (input, init) => fetch(input, { ...init, headers: { ...(init?.headers as Record<string, string> ?? {}), ...headers } }) }
+      : undefined,
+    requestInit: headers ? { headers } : undefined,
+  });
+}
+
+function isAuthError(err: unknown): boolean {
+  const msg = String(err).toLowerCase();
+  return msg.includes("unauthorized") || msg.includes("forbidden") ||
+    msg.includes("401") || msg.includes("403");
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
@@ -268,5 +348,9 @@ function isTransportError(err: unknown): boolean {
   return msg.includes("econnrefused") || msg.includes("econnreset") ||
     msg.includes("epipe") || msg.includes("timed out") || msg.includes("fetch failed") ||
     msg.includes("session not found") || msg.includes("no valid session") ||
-    msg.includes("session-id header is required") || msg.includes("server not initialized");
+    msg.includes("session-id header is required") || msg.includes("server not initialized") ||
+    msg.includes("streamable http error") || msg.includes("posting to endpoint") ||
+    msg.includes("http error") || msg.includes("unauthorized") || msg.includes("forbidden") ||
+    msg.includes("401") || msg.includes("403") || msg.includes("500") ||
+    msg.includes("502") || msg.includes("503") || msg.includes("504");
 }

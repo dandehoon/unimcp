@@ -1,14 +1,29 @@
-import { isHttpServer } from "./config.js";
-import type { HttpServer, StdioServer, ServerConfig } from "./config.js";
+import { isHttpServer, isSseServer } from "./config.js";
+import type { HttpServer, StdioServer, SseServer, ServerConfig } from "./config.js";
 
 export function formatListLine(name: string, srv: ServerConfig): string {
   if (isHttpServer(srv)) return `${name}  http  ${srv.url}`;
+  if (isSseServer(srv)) return `${name}  sse  ${srv.url}`;
   const argsPart = srv.args?.length ? `  ${srv.args.join(" ")}` : "";
   return `${name}  stdio  ${srv.command}${argsPart}`;
 }
 
 export function formatServer(srv: ServerConfig): string[] {
-  return isHttpServer(srv) ? formatHttpServer(srv) : formatStdioServer(srv);
+  if (isHttpServer(srv)) return formatHttpServer(srv);
+  if (isSseServer(srv)) return formatSseServer(srv);
+  return formatStdioServer(srv);
+}
+
+export function formatSseServer(srv: SseServer): string[] {
+  const lines: string[] = [`type:  sse`, `url:   ${maskUrl(srv.url)}`];
+  const headerEntries = srv.headers ? Object.entries(srv.headers) : [];
+  if (headerEntries.length > 0) {
+    lines.push(`headers:`);
+    for (const [k, v] of headerEntries) lines.push(`  ${k}: ${maskValue(k, v)}`);
+  } else {
+    lines.push(`headers: (none)`);
+  }
+  return lines;
 }
 
 export function formatHttpServer(srv: HttpServer): string[] {

@@ -8,6 +8,7 @@ import { runSetup } from "./setup.js";
 import { runCollect } from "./collect.js";
 import { resolveMcpFile, computeEnvHash } from "./config.js";
 import { runStatus } from "./status.js";
+import { runStop } from "./stop.js";
 import { cmdList, cmdGet, cmdAdd, cmdAddJson, cmdRemove } from "./mcp.js";
 import type { AddOpts } from "./mcp.js";
 import { log, splitCommaSeparated, collectRepeatable } from "./utils.js";
@@ -137,6 +138,30 @@ function resolveEnvHash(flagHash: string | undefined, configPath: string): strin
   if (flagHash && /^[0-9a-f]{8}$/.test(flagHash)) return flagHash;
   return computeEnvHash(configPath);
 }
+
+program
+  .command("stop [id]")
+  .description("Stop daemon(s) — by ID prefix, current context, or all")
+  .option("--all", "Stop all running daemons")
+  .action((id: string | undefined, opts: { all?: boolean }, cmd) => {
+    const g = globalOpts(cmd);
+    const configPath = resolveConfigPath(g.mcpFile);
+    const envHash = resolveEnvHash(g.envHash, configPath);
+    runStop({ envHash, id, all: opts.all });
+  });
+
+program
+  .command("restart [id]")
+  .description("Restart daemon — stops then respawns on next bridge connection")
+  .option("--all", "Restart all daemons (stops all; next client connection respawns)")
+  .action((id: string | undefined, opts: { all?: boolean }, cmd) => {
+    const g = globalOpts(cmd);
+    const configPath = resolveConfigPath(g.mcpFile);
+    const envHash = resolveEnvHash(g.envHash, configPath);
+    const stopped = runStop({ envHash, id, all: opts.all });
+    if (stopped > 0) log("[restart] daemon(s) stopped — will respawn on next client connection");
+    else log("[restart] no running daemons to restart");
+  });
 
 program.parseAsync(process.argv).catch((err) => {
   log(String(err));

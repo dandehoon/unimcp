@@ -47,7 +47,16 @@ export type HttpServer = {
   exclude?: string[];
 };
 
-export type ServerConfig = StdioServer | HttpServer;
+export type SseServer = {
+  type: "sse";
+  url: string;
+  headers?: Record<string, string>;
+  enabled?: boolean;
+  include?: string[];
+  exclude?: string[];
+};
+
+export type ServerConfig = StdioServer | HttpServer | SseServer;
 
 export type Config = {
   mcpServers: Record<string, ServerConfig>;
@@ -61,7 +70,11 @@ export type ResolveMcpFileOpts = {
 };
 
 export function isHttpServer(s: ServerConfig): s is HttpServer {
-  return (s as HttpServer).type === "http";
+  return "type" in s && s.type === "http";
+}
+
+export function isSseServer(s: ServerConfig): s is SseServer {
+  return "type" in s && s.type === "sse";
 }
 
 export function resolveMcpFile(opts: ResolveMcpFileOpts): string {
