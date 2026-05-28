@@ -347,6 +347,7 @@ function isTransportError(err: unknown): boolean {
   const msg = String(err).toLowerCase();
   return msg.includes("econnrefused") || msg.includes("econnreset") ||
     msg.includes("epipe") || msg.includes("timed out") || msg.includes("fetch failed") ||
+    msg.includes("unable to connect") || msg.includes("socket hang up") || msg.includes("network error") ||
     msg.includes("session not found") || msg.includes("no valid session") ||
     msg.includes("session-id header is required") || msg.includes("server not initialized") ||
     msg.includes("streamable http error") || msg.includes("posting to endpoint") ||

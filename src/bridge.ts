@@ -24,6 +24,7 @@ export type BridgeOptions = {
 const RECONNECT_COOLDOWN_MS = 5_000;
 const TRANSPORT_ERROR_PATTERNS = [
   "econnrefused", "econnreset", "epipe", "timed out", "fetch failed",
+  "unable to connect", "socket hang up", "network error",
   "session not found", "no valid session", "session-id header is required", "server not initialized",
 ];
 
