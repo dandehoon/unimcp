@@ -13,28 +13,11 @@ Docker-based MCP servers add another pain point: poor lifecycle management. Stdi
 unimcp fixes these:
 
 - **One config** — define all MCP servers in a single `unimcp.json`. Every client connects through unimcp.
-- **Auto daemon** — a shared background process manages all upstream connections. Auto-spawns on first use, auto-shuts down after 30s idle, hot-reloads on config change. No orphaned Docker containers or zombie stdio processes. Different environment contexts automatically get separate daemon instances.
+- **Auto daemon** — a shared background process manages all upstream connections. Auto-spawns on first use, auto-shuts down after 30s idle, hot-reloads on config change. No orphaned Docker containers or zombie stdio processes.
 - **Client-side tool control** — because clients share a daemon, each one can declare what tools it sees via `UNIMCP_INCLUDE`/`UNIMCP_EXCLUDE` env vars. No server-side profiles to manage.
+- **Per-secret isolation** — different `${VAR}` values (e.g. distinct `GITHUB_TOKEN`s) automatically get separate daemon instances.
 
-```
- Claude Code ──┐                        ┌── context7 (http)
-               │    ┌──────────────┐    │
- Cursor ───────┼───►│   unimcp     │────┼── searxng (docker/stdio)
-               │    │   daemon     │    │
- VS Code ──────┤    └──────────────┘    └── github-mcp (stdio)
-               │         ▲
- Any client ───┘    auto-spawn / auto-shutdown / hot-reload
-```
-
-Different `${VAR}` values automatically get separate daemons:
-
-```
-Client A (GITHUB_TOKEN=abc) ──┐
-                               ├──► daemon instance 1
-Client B (GITHUB_TOKEN=abc) ──┘
-
-Client C (GITHUB_TOKEN=xyz) ──────► daemon instance 2
-```
+See [Architecture](#architecture) for the full picture.
 
 ## Quick start
 
@@ -95,6 +78,71 @@ unimcp setup --global                 # user-level config
 Supported targets: `claude`, `cursor`, `copilot`, `opencode`.
 
 Done. Your clients now connect through unimcp instead of spawning servers directly.
+
+## Architecture
+
+unimcp has two layers — a thin per-client **bridge** and a shared **daemon**:
+
+```mermaid
+flowchart LR
+    subgraph clients["MCP clients"]
+        direction TB
+        cc[Claude Code]
+        cu[Cursor]
+        vs[VS Code / Copilot]
+    end
+    subgraph bridges["unimcp bridges — one stdio process per client"]
+        direction TB
+        br1[unimcp]
+        br2[unimcp]
+        br3[unimcp]
+    end
+    subgraph daemon["unimcp daemon — shared, HTTP :4848"]
+        agg["aggregator<br/>tools merged as<br/>serverName__toolName"]
+    end
+    subgraph upstreams["upstream MCP servers"]
+        direction TB
+        u1["context7"]
+        u2["searxng"]
+        u3["github"]
+    end
+    cc <-- stdio --> br1
+    cu <-- stdio --> br2
+    vs <-- stdio --> br3
+    br1 -- "HTTP /mcp<br/>X-Tools-Include / X-Tools-Exclude" --> agg
+    br2 -- "HTTP /mcp" --> agg
+    br3 -- "HTTP /mcp" --> agg
+    agg -- HTTP --> u1
+    agg -- "stdio (docker)" --> u2
+    agg -- stdio --> u3
+```
+
+- **Bridge** — each MCP client spawns its own `unimcp` stdio process. It forwards `tools/list` and `tools/call` to the daemon over HTTP and applies the per-client `UNIMCP_INCLUDE` / `UNIMCP_EXCLUDE` filters as request headers.
+- **Daemon** — one shared HTTP server (`/mcp`) owns all upstream connections, merges their tools into the `serverName__toolName` namespace, and serves every bridge. Built-in endpoints: `/health`, `/status`, `/mcp`.
+
+### Lifecycle
+
+| Behavior | Detail |
+|----------|--------|
+| Auto-spawn | First bridge to start checks the PID file. If no daemon, it spawns one (detached) and waits up to 15 s for `/health`. |
+| Idle shutdown | Daemon counts SSE sessions; 30 s after the last one closes, it exits and removes its PID file. |
+| Hot reload | `unimcp.json` is watched. On change, the daemon swaps in a new aggregator without dropping in-flight requests. |
+| Port fallback | Daemon tries `UNIMCP_PORT` (default 4848); if taken, picks an OS-assigned port and writes the actual port into the PID file so bridges discover it. |
+| Reconnect | Bridges detect transport errors (`ECONNRESET`, session-gone, fetch-failed, …) and re-spawn the daemon if it has died. |
+
+### Per-context isolation
+
+Each running daemon is scoped to its own context — defined by which `unimcp.json` is being served and the values of any environment variables that config references. Two clients in the same project with matching env share one daemon; switch project, *or* change a referenced variable, and a fresh daemon spins up:
+
+```mermaid
+flowchart LR
+    a["Cursor<br/>foo/unimcp.json · ENV=dev"] --> d1{{daemon 1}}
+    b["Claude<br/>foo/unimcp.json · ENV=dev"] --> d1
+    c["Cursor<br/>foo/unimcp.json · ENV=prod"] --> d2{{daemon 2}}
+    d["Cursor<br/>bar/unimcp.json"] --> d3{{daemon 3}}
+```
+
+Inspect or stop them with `unimcp status` and `unimcp stop`.
 
 ## Configuration
 
@@ -179,15 +227,22 @@ Both server-level and client-level filters are AND-ed: a tool must pass both to 
 ## Commands
 
 ```
-unimcp                     Stdio mode (auto daemon + bridge)
-unimcp --http              Run as HTTP daemon directly
-unimcp status              Show running daemons and loaded tools
-unimcp setup               Register in client configs
+# Runtime
+unimcp                     Stdio mode (ensure daemon, bridge stdio ↔ daemon)
+unimcp --http              Run as HTTP daemon directly (no bridge)
+unimcp status              Show running daemon info and loaded tools
+unimcp stop [id]           Stop the daemon for current context, an ID prefix, or --all
+unimcp restart [id]        Stop the daemon; next client connection respawns it
+
+# Client integration
+unimcp setup               Register unimcp in client configs (claude/cursor/copilot/opencode)
 unimcp collect             Merge MCP configs from all clients into one
-unimcp list                List servers in config
+
+# Config editing
+unimcp list                List servers in unimcp.json
 unimcp get <name>          Show server details
-unimcp add <name>          Add a server
-unimcp add-json <name>     Add a server from JSON
+unimcp add <name>          Add a server (--type, --command, --args, --env, --url, --header)
+unimcp add-json <name> …   Add a server from a JSON string
 unimcp remove <name>       Remove a server
 ```
 

@@ -8,28 +8,77 @@ Coding agent reference for the **unimcp** repository: a TypeScript MCP aggregato
 
 ```
 src/
-  index.ts       # Entry point — routes to server, daemon, bridge, or setup mode
-  config.ts      # Config types + loader with ${VAR} env expansion
-  aggregator.ts  # Upstream client manager, tool merger, call router
-  server.ts      # Managed HTTP server (session tracking, hot-reload, auto-stop)
-  daemon.ts      # Background daemon lifecycle (pid file + health check)
-  bridge.ts      # Stdio ↔ HTTP bridge (used in default stdio mode)
-  setup.ts       # Editor registration (Claude Code, Cursor, VS Code/Copilot, OpenCode)
-  collect.ts     # Collect command: reads MCP configs from all editors, merges, outputs
-  utils.ts       # Shared utilities (stripJsonComments)
+  index.ts        # Commander CLI entry — routes to bridge, daemon, server, setup, collect, mcp/status/stop
+  config.ts       # Config types, loader, ${VAR} expansion, env-hash, pidFilePath helper, header constants
+  aggregator.ts   # Upstream client manager — connect, merge tools, route calls, in-flight reconnect
+  server.ts      # Managed HTTP daemon — /health /status /mcp, sessions, idle shutdown, hot reload, port fallback
+  daemon.ts       # Daemon spawn / supervisor — detached process, PID file, health-check loop
+  bridge.ts       # Stdio ↔ HTTP bridge (default mode) — auto-reconnect, forwards UNIMCP_INCLUDE/EXCLUDE as headers
+  setup.ts        # `setup` command — register unimcp in client configs
+  collect.ts      # `collect` command — read MCP configs from all clients, merge, output
+  status.ts       # `status` command — list running daemons + loaded tools
+  stop.ts         # `stop` / `restart` commands — kill by ID prefix, current context, or --all
+  mcp.ts          # `list` / `get` / `add` / `add-json` / `remove` server CRUD
+  mcp-format.ts   # CLI pretty-printer for server entries
+  utils.ts        # Shared utilities (log, writeFileSafe, tryUnlink, identity constants, glob splitters)
 bin/
-  unimcp.js      # npm launcher: finds bun and runs src/index.ts
+  unimcp.js       # npm launcher: dynamic-imports dist/unimcp.js (the bundled output)
 tests/
-  *.test.ts      # Unit tests (bun test)
+  *.test.ts       # Unit tests (bun test) — aggregator, config, setup, utils
 .github/
   workflows/
-    ci.yml       # Type check + unit tests on push/PR to main
-    release.yml  # Build multi-platform binaries + publish to npm on vX.Y.Z tag
-unimcp.json      # Server config (gitignored — user-created, not committed)
-.env             # Secrets (gitignored)
-tsconfig.json    # Strict ESNext, moduleResolution: Bundler, noEmit
-package.json     # pnpm project, scripts below
+    ci.yml        # Type check + unit tests on push/PR to main
+    codeql.yml    # CodeQL static analysis
+    scorecard.yml # OSSF Scorecard
+unimcp.json       # Server config (gitignored — user-created, not committed)
+.env              # Secrets (gitignored)
+tsconfig.json     # Strict ESNext, moduleResolution: Bundler, noEmit
+package.json      # pnpm project, scripts below
 ```
+
+### Architecture at a glance
+
+Three process types. `index.ts` is the single binary entrypoint; CLI flags decide which role it plays.
+
+```mermaid
+flowchart TB
+    subgraph cli_p["MCP client process"]
+        ed[editor / agent]
+    end
+
+    subgraph bridge_p["unimcp bridge — spawned per client (default mode)"]
+        direction LR
+        idx1["index.ts<br/>(no --http)"]
+        idx1 --> dmn["daemon.ts<br/><i>ensureDaemon()</i>"]
+        idx1 --> br["bridge.ts<br/><i>runBridge()</i>"]
+    end
+
+    subgraph daemon_p["unimcp daemon — single detached process"]
+        direction LR
+        idx2["index.ts --http"]
+        idx2 --> srv["server.ts<br/><i>startManagedServer()</i>"]
+        srv --> agg["aggregator.ts"]
+        srv -. chokidar watch .-> hr[/hot reload/]
+        srv -. "0 sessions for 30s" .-> idle[/idle shutdown/]
+    end
+
+    subgraph up["upstream MCP servers"]
+        u1[stdio]
+        u2[HTTP / SSE]
+    end
+
+    ed <-- "stdio JSON-RPC" --> idx1
+    dmn -. "spawn detached if<br/>PID file missing or /health fails" .-> idx2
+    br -- "HTTP /mcp<br/>X-Tools-Include / X-Tools-Exclude" --> srv
+    agg -- "MCP Client" --> u1
+    agg -- "MCP Client" --> u2
+```
+
+- `index.ts` parses CLI and dispatches: default = `ensureDaemon → runBridge`; `--http` = `startManagedServer` (the daemon itself).
+- `daemon.ts` runs **in the bridge process** as a client-side supervisor. It reads the PID file at `~/.config/unimcp/daemon.<envHash>.pid`, probes `/health`, and `spawn`s a detached `index.ts --http` process if nothing is alive.
+- `server.ts` runs **in the daemon process** — owns the HTTP listener, session counter, hot reload, idle shutdown, and writes the PID file once it's bound to a port.
+- `aggregator.ts` holds the upstream `Client` instances and merges their tools as `serverName__toolName`. It is owned by `server.ts` and swapped wholesale on config reload.
+- `bridge.ts` connects to the daemon with `StreamableHTTPClientTransport`, retries with cooldown on transport errors, and re-invokes `ensureDaemon` if the daemon has died.
 
 ---
 
@@ -214,9 +263,11 @@ await client.connect(new StdioClientTransport({ command, args, env }));
 - `.env` is **gitignored** — no longer auto-loaded; secrets must be set in the shell environment before launching unimcp. `${VAR}` in `unimcp.json` is expanded from `process.env` at load time.
 - Config resolution order: `./unimcp.json` (local cwd) > `--mcp-file` flag / `UNIMCP_CONFIG` env > `~/.config/unimcp/unimcp.json` (global default). The `DEFAULT_MCP_FILE` exported from `config.ts` points to the global path; local resolution is in `resolveMcpFile()` in `index.ts`.
 - Daemon pid files live at **`~/.config/unimcp/daemon.<envHash>.pid`** (not in cwd)
-  - `envHash` is an 8-char lowercase hex SHA-256 over the values of all `${VAR}` references in `unimcp.json` from the bridge's `process.env`
+  - `envHash` is an 8-char lowercase hex SHA-256 over `JSON.stringify({ __config: <abs path of unimcp.json>, ...sorted ${VAR} → process.env[VAR] map })` — see `computeEnvHash()` in `config.ts`
+  - **Both inputs matter**: a different config file path *or* a different resolved value for any referenced env var produces a distinct hash → distinct daemon
+  - Variables referenced but unset resolve to `""` (still contribute to the hash); unreferenced env vars are ignored
   - Format: `"<pid>:<port>"` e.g. `"94663:4848"` or `"94844:52341"` (after port fallback)
-  - `CONFIG_DIR` is exported from `server.ts`; pid file path is computed dynamically from `envHash` in both `server.ts` and `daemon.ts`
+  - `pidFilePath(envHash)` in `config.ts` is the single source of truth for the path; called from both `server.ts` and `daemon.ts`
   - Each distinct env context spawns its own isolated daemon; clients sharing the same env hash reuse one daemon
 
 ### Key constants
@@ -309,22 +360,30 @@ Output format: `{ "mcpServers": { ... } }` — directly usable as unimcp's unimc
 ## npm package
 
 - **Package name**: `@dandehoon/unimcp` (scoped, public)
-- **`bin`**: `./bin/unimcp.js` — thin Node.js launcher that finds `bun` and runs `src/index.ts`
-- **`files`**: `src/`, `bin/`, `README.md` (no `dist/` — binaries are too large for npm)
+- **`bin`**: `./bin/unimcp.js` — thin Node.js launcher that dynamic-imports `dist/unimcp.js` (the bundled output)
+- **`files`**: `src/`, `bin/`, `dist/unimcp.js`, `README.md`, `SECURITY.md` — `dist/unimcp.js` must exist at publish time or the installed `bin/unimcp.js` will fail at import
 - **`publishConfig`**: `{ "access": "public" }`
-- Published to npmjs on `vX.Y.Z` tag push via GitHub Actions
 
-### Release process
+### Release process (manual — no CI publish)
+
+Auto-publish via GitHub Actions was removed (commit `41aec64`). Releases are now driven by a human.
 
 ```bash
-git tag vX.Y.Z && git push --tags
-# → triggers release.yml:
-#   1. typecheck
-#   2. pnpm publish --no-git-checks → npmjs (uses NPM_TOKEN secret)
+# 1. Bump version in package.json (semver)
+# 2. Verify clean
+pnpm typecheck && pnpm test
+
+# 3. Commit, tag (signed), push
+git commit -am "chore: release vX.Y.Z"
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push && git push --tags
+
+# 4. Build bundle + publish (requires `npm login` with publish rights)
+pnpm bundle                       # produces dist/unimcp.js
+pnpm publish --no-git-checks
 ```
 
-Required GitHub repository secrets:
-- `NPM_TOKEN` — npmjs automation token with publish rights to `@dandehoon/unimcp`
+Recommended hardening: add `"prepublishOnly": "pnpm bundle"` to `package.json` scripts so the bundle is always rebuilt before publishing — otherwise a forgotten `pnpm bundle` ships a package whose `bin` import resolves to nothing.
 
 ---
 
