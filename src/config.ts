@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { readFileSync } from "fs";
 import path from "path";
 import os from "os";
-import { stripJsonComments } from "./utils.js";
+import { log, stripJsonComments } from "./utils.js";
 
 const MAX_CONFIG_BYTES = 1_048_576; // 1 MB
 
@@ -84,10 +84,34 @@ export function resolveMcpFile(opts: ResolveMcpFileOpts): string {
   return DEFAULT_MCP_FILE;
 }
 
+/** Parses the config as written, leaving `${VAR}` references intact. */
+export function loadRawConfig(filePath: string): Config {
+  const parsed = JSON.parse(stripJsonComments(readRawConfig(filePath))) as Partial<Config>;
+  const servers = parsed?.mcpServers;
+  if (servers === undefined) return { mcpServers: {} };
+  if (typeof servers !== "object" || servers === null || Array.isArray(servers)) {
+    throw new Error(`Config "mcpServers" must be an object: ${filePath}`);
+  }
+  return { mcpServers: servers };
+}
+
+/** Loads the config with `${VAR}` expanded, dropping servers whose references are unset. */
 export function loadConfig(filePath: string): Config {
-  const raw = stripJsonComments(readRawConfig(filePath));
-  const expanded = raw.replace(ENV_VAR_RE, (_match: string, name: string) => process.env[name] ?? "");
-  return JSON.parse(expanded) as Config;
+  const mcpServers: Record<string, ServerConfig> = {};
+  for (const [rawName, rawSrv] of Object.entries(loadRawConfig(filePath).mcpServers)) {
+    const { resolved, missing } = resolveEnvRefs({ name: rawName, srv: rawSrv });
+    if (missing.length > 0) {
+      if (rawSrv.enabled !== false) log(`[config] skipping '${rawName}' — unset env var(s): ${missing.join(", ")}`);
+      continue;
+    }
+    mcpServers[resolved.name] = resolved.srv;
+  }
+  return { mcpServers };
+}
+
+/** Names of `${VAR}` references in a server config that are unset or empty. */
+export function missingEnvVars(srv: ServerConfig): string[] {
+  return resolveEnvRefs(srv).missing;
 }
 
 export function computeEnvHash(filePath: string): string {
@@ -109,6 +133,30 @@ export function computeEnvHash(filePath: string): string {
 }
 
 // --- helpers ---
+
+function resolveEnvRefs<T>(value: T): { resolved: T; missing: string[] } {
+  const missing = new Set<string>();
+  const resolved = mapStrings(value, (s) =>
+    s.replace(ENV_VAR_RE, (_match: string, name: string) => {
+      const value = process.env[name];
+      if (!value) {
+        missing.add(name);
+        return "";
+      }
+      return value;
+    })
+  );
+  return { resolved, missing: [...missing] };
+}
+
+function mapStrings<T>(value: T, fn: (s: string) => string): T {
+  if (typeof value === "string") return fn(value) as T;
+  if (Array.isArray(value)) return value.map((v) => mapStrings(v, fn)) as T;
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [fn(k), mapStrings(v, fn)])) as T;
+  }
+  return value;
+}
 
 function readRawConfig(filePath: string): string {
   const buf = readFileSync(filePath);

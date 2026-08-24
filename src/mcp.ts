@@ -1,4 +1,4 @@
-import { loadConfig } from "./config.js";
+import { loadRawConfig } from "./config.js";
 import type { Config, ServerConfig } from "./config.js";
 import { log, parseKvPairs, writeFileSafe, toJson } from "./utils.js";
 import { formatServer, formatListLine } from "./mcp-format.js";
@@ -108,7 +108,7 @@ function buildHttpServer(opts: AddOpts): ServerConfig {
 
 function readConfig(configPath: string): Config {
   try {
-    return loadConfig(configPath);
+    return loadRawConfig(configPath);
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return { mcpServers: {} };
     throw new Error(`could not read config at ${configPath}: ${String(err)}`, { cause: err });

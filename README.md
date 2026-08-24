@@ -150,7 +150,7 @@ The `unimcp.json` format extends the standard `mcpServers` schema used by Claude
 
 Config is resolved in this order: `./unimcp.json` (local) > `--mcp-file` flag / `UNIMCP_CONFIG` env > `~/.config/unimcp/unimcp.json` (global).
 
-`${VAR}` references are expanded from your shell environment at load time.
+`${VAR}` references are expanded from your shell environment at load time. If a referenced variable is unset or empty, that server is skipped rather than started with a blank value.
 
 ```jsonc
 {
