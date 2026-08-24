@@ -9,7 +9,7 @@ Coding agent reference for the **unimcp** repository: a TypeScript MCP aggregato
 ```
 src/
   index.ts        # Commander CLI entry — routes to bridge, daemon, server, setup, collect, mcp/status/stop
-  config.ts       # Config types, loader, ${VAR} expansion, env-hash, pidFilePath helper, header constants
+  config.ts       # Config types, loader, ${VAR} expansion (skips servers with unset vars), env-hash, pidFilePath helper, header constants
   aggregator.ts   # Upstream client manager — connect, merge tools, route calls, in-flight reconnect
   server.ts      # Managed HTTP daemon — /health /status /mcp, sessions, idle shutdown, hot reload, port fallback
   daemon.ts       # Daemon spawn / supervisor — detached process, PID file, health-check loop
@@ -260,12 +260,12 @@ await client.connect(new StdioClientTransport({ command, args, env }));
 ## Key architectural rules
 
 - `unimcp.json` is **gitignored** — never commit it; it is user-local
-- `.env` is **gitignored** — no longer auto-loaded; secrets must be set in the shell environment before launching unimcp. `${VAR}` in `unimcp.json` is expanded from `process.env` at load time.
+- `.env` is **gitignored** — no longer auto-loaded; secrets must be set in the shell environment before launching unimcp. `${VAR}` in `unimcp.json` is expanded from `process.env` at load time; a server referencing an unset or empty var is **skipped entirely** (no fallback, no partial config) — see `loadConfig()` vs `loadRawConfig()` in `config.ts`.
 - Config resolution order: `./unimcp.json` (local cwd) > `--mcp-file` flag / `UNIMCP_CONFIG` env > `~/.config/unimcp/unimcp.json` (global default). The `DEFAULT_MCP_FILE` exported from `config.ts` points to the global path; local resolution is in `resolveMcpFile()` in `index.ts`.
 - Daemon pid files live at **`~/.config/unimcp/daemon.<envHash>.pid`** (not in cwd)
   - `envHash` is an 8-char lowercase hex SHA-256 over `JSON.stringify({ __config: <abs path of unimcp.json>, ...sorted ${VAR} → process.env[VAR] map })` — see `computeEnvHash()` in `config.ts`
   - **Both inputs matter**: a different config file path *or* a different resolved value for any referenced env var produces a distinct hash → distinct daemon
-  - Variables referenced but unset resolve to `""` (still contribute to the hash); unreferenced env vars are ignored
+  - Variables referenced but unset resolve to `""` for hashing (they still contribute to the hash, even though the owning server is skipped at load); unreferenced env vars are ignored
   - Format: `"<pid>:<port>"` e.g. `"94663:4848"` or `"94844:52341"` (after port fallback)
   - `pidFilePath(envHash)` in `config.ts` is the single source of truth for the path; called from both `server.ts` and `daemon.ts`
   - Each distinct env context spawns its own isolated daemon; clients sharing the same env hash reuse one daemon

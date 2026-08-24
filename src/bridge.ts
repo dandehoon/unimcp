@@ -9,7 +9,7 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { loadConfig, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE } from "./config.js";
+import { loadRawConfig, missingEnvVars, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE } from "./config.js";
 import { SEP } from "./aggregator.js";
 import { ensureDaemon } from "./daemon.js";
 import { log, MCP_SERVER_IDENTITY } from "./utils.js";
@@ -142,12 +142,12 @@ function buildFilterHeaders(): Record<string, string> | undefined {
 }
 
 function logConnectionStatus(tools: Tool[], configPath: string): void {
-  let configuredNames: string[];
+  let configured: { name: string; missing: string[] }[];
   try {
-    const config = loadConfig(configPath);
-    configuredNames = Object.entries(config.mcpServers)
+    const config = loadRawConfig(configPath);
+    configured = Object.entries(config.mcpServers)
       .filter(([_n, srv]) => srv.enabled !== false)
-      .map(([name]) => name);
+      .map(([name, srv]) => ({ name, missing: missingEnvVars(srv) }));
   } catch {
     log(`[bridge] connected to daemon — ${tools.length} tools available`);
     return;
@@ -160,10 +160,14 @@ function logConnectionStatus(tools: Tool[], configPath: string): void {
   }
 
   let failedCount = 0;
-  const parts = configuredNames.map((n) => {
-    if (connectedNames.has(n)) return `${n}: ok`;
+  const parts = configured.map(({ name, missing }) => {
+    if (missing.length > 0) {
+      failedCount++;
+      return `${name}: missing env ${missing.join(",")}`;
+    }
+    if (connectedNames.has(name)) return `${name}: ok`;
     failedCount++;
-    return `${n}: no tools`;
+    return `${name}: no tools`;
   });
   const suffix = failedCount > 0 ? ` ⚠ ${failedCount} upstream(s) unavailable` : "";
   log(`[bridge] connected to daemon — ${tools.length} tools (${parts.join(", ")})${suffix}`);

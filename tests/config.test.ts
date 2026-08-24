@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { loadConfig, isHttpServer, computeEnvHash, DEFAULT_MCP_FILE, resolveMcpFile } from "../src/config.js";
+import { loadConfig, loadRawConfig, isHttpServer, computeEnvHash, DEFAULT_MCP_FILE, resolveMcpFile } from "../src/config.js";
 import { writeFileSync, unlinkSync, mkdirSync } from "fs";
 import { tmpdir, homedir } from "os";
 import { join } from "path";
@@ -43,11 +43,55 @@ describe("loadConfig", () => {
     delete process.env.TEST_TOKEN;
   });
 
-  test("expands missing env var to empty string", () => {
+  test("drops servers referencing an unset env var", () => {
     const file = join(dir, "missing-env.json");
-    writeFileSync(file, '{"mcpServers": {"s": {"command": "${MISSING_VAR_XYZ}"}}}');
+    writeFileSync(file, '{"mcpServers": {"s": {"command": "${MISSING_VAR_XYZ}"}, "ok": {"command": "npx"}}}');
     const config = loadConfig(file);
-    expect((config.mcpServers["s"] as { command: string }).command).toBe("");
+    expect(config.mcpServers["s"]).toBeUndefined();
+    expect(config.mcpServers["ok"]).toBeDefined();
+  });
+
+  test("drops servers referencing an empty env var", () => {
+    process.env.EMPTY_VAR_XYZ = "";
+    const file = join(dir, "empty-env.json");
+    writeFileSync(file, '{"mcpServers": {"s": {"command": "npx", "env": {"T": "${EMPTY_VAR_XYZ}"}}}}');
+    expect(loadConfig(file).mcpServers["s"]).toBeUndefined();
+    delete process.env.EMPTY_VAR_XYZ;
+  });
+
+  test("expands ${VAR} in server names and object keys", () => {
+    process.env.KEY_VAR_XYZ = "acme";
+    const file = join(dir, "key-env.json");
+    writeFileSync(file, '{"mcpServers": {"${KEY_VAR_XYZ}-gh": {"command": "npx", "env": {"${KEY_VAR_XYZ}_TOKEN": "t"}}}}');
+    const srv = loadConfig(file).mcpServers["acme-gh"] as { env: Record<string, string> };
+    expect(srv).toBeDefined();
+    expect(srv.env["acme_TOKEN"]).toBe("t");
+    delete process.env.KEY_VAR_XYZ;
+  });
+
+  test("does not warn for disabled servers with unset vars", () => {
+    const file = join(dir, "disabled-env.json");
+    writeFileSync(file, '{"mcpServers": {"s": {"command": "${MISSING_VAR_XYZ}", "enabled": false}}}');
+    expect(loadConfig(file).mcpServers["s"]).toBeUndefined();
+  });
+
+  test("treats absent mcpServers as empty", () => {
+    const file = join(dir, "no-servers.json");
+    writeFileSync(file, "{}");
+    expect(loadConfig(file).mcpServers).toEqual({});
+  });
+
+  test("rejects non-object mcpServers", () => {
+    const file = join(dir, "bad-servers.json");
+    writeFileSync(file, '{"mcpServers": []}');
+    expect(() => loadConfig(file)).toThrow(/must be an object/);
+  });
+
+  test("keeps ${VAR} intact in raw config", () => {
+    const file = join(dir, "raw-env.json");
+    writeFileSync(file, '{"mcpServers": {"s": {"command": "${MISSING_VAR_XYZ}"}}}');
+    const config = loadRawConfig(file);
+    expect((config.mcpServers["s"] as { command: string }).command).toBe("${MISSING_VAR_XYZ}");
   });
 
   test("loads enabled field on servers", () => {
