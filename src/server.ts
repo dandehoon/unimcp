@@ -91,8 +91,11 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   }
 
   const httpServer = http.createServer(async (req, res) => {
+    // envHash is the daemon's identity, not decoration: a bridge whose pid file went stale can
+    // reach a daemon built from another session's secrets on the same fixed port, so it must be
+    // able to tell whose daemon answered.
     if (req.url === "/health") {
-      res.writeHead(200).end("ok");
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ ok: true, envHash: opts.envHash }));
       return;
     }
 

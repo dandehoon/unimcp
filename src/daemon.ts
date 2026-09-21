@@ -41,7 +41,7 @@ async function runningDaemon(envHash: string, host: string): Promise<DaemonInfo 
     return null;
   }
 
-  const healthy = await checkHealth(host, info.port);
+  const healthy = await checkHealth(host, info.port, envHash);
   if (!healthy) {
     tryUnlink(pidFile);
     return null;
@@ -89,7 +89,7 @@ async function waitForDaemon(spawnedPid: number, envHash: string, host: string):
       throw new Error("Daemon exited unexpectedly — config file missing or invalid");
     }
     const info = parsePidFile(pidFile);
-    if (info && isAlive(info.pid) && (await checkHealth(host, info.port))) {
+    if (info && isAlive(info.pid) && (await checkHealth(host, info.port, envHash))) {
       return info.port;
     }
     await sleep(POLL_INTERVAL_MS);
@@ -120,10 +120,15 @@ export function isAlive(pid: number): boolean {
   }
 }
 
-async function checkHealth(host: string, port: number): Promise<boolean> {
+// A live pid and a 200 only prove *some* daemon owns the port: pid files outlive hard-killed
+// daemons, the preferred port is fixed, and PIDs get recycled — so the port can belong to a
+// daemon for a different env. Require it to name our envHash before trusting it.
+async function checkHealth(host: string, port: number, envHash: string): Promise<boolean> {
   try {
     const res = await fetchWithTimeout(`http://${host}:${port}/health`, HEALTH_CHECK_TIMEOUT_MS);
-    return res.ok;
+    if (!res.ok) return false;
+    const body = (await res.json()) as { envHash?: unknown };
+    return body?.envHash === envHash;
   } catch {
     return false;
   }
