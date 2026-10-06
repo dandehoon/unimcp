@@ -191,6 +191,8 @@ Config is resolved in this order: `./unimcp.json` (local) > `--mcp-file` flag / 
 | `UNIMCP_HOST` | Daemon host (default: 127.0.0.1) |
 | `UNIMCP_INCLUDE` | Comma-separated glob patterns; only matching tools are visible |
 | `UNIMCP_EXCLUDE` | Comma-separated glob patterns; matching tools are hidden |
+| `UNIMCP_GRANTS` | Comma-separated grants this client holds (see [Grants](#grants)) |
+| `UNIMCP_GRANTS_FILE` | File of grants, one per line; watched, so changes apply mid-session |
 
 ### Per-client tool control
 
@@ -223,6 +225,22 @@ UNIMCP_EXCLUDE=internal__*              # everything except these
 ```
 
 Both server-level and client-level filters are AND-ed: a tool must pass both to be visible.
+
+### Grants
+
+A top-level `grants` map hides tools from every client until it holds the grant that covers them. Globs match the prefixed `serverName__toolName`:
+
+```jsonc
+{
+  "mcpServers": { "...": {} },
+  "grants": {
+    "proddb": ["proddb__*"],
+    "deploy-write": ["portal__create_*", "portal__update_*"]
+  }
+}
+```
+
+A client holds the grants in `UNIMCP_GRANTS` plus the lines of `UNIMCP_GRANTS_FILE`; the bridge sends them to the daemon, which does the hiding — a client that sends none holds none, and a locked tool can't be called by name either. The bridge watches the grants file: when it changes, it reconnects with the new grants and sends `notifications/tools/list_changed`, so a grant given or revoked mid-session takes effect without restarting the client.
 
 ## Commands
 

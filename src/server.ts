@@ -9,7 +9,7 @@ import {
   ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
-import { loadConfig, type ToolFilter, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, CONFIG_DIR, pidFilePath } from "./config.js";
+import { loadConfig, type ToolFilter, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, HEADER_TOOLS_GRANTS, CONFIG_DIR, pidFilePath } from "./config.js";
 import { Aggregator } from "./aggregator.js";
 import { log, tryUnlink, splitCommaSeparated, writeFileSafe, PERMS_PRIVATE, MCP_SERVER_IDENTITY } from "./utils.js";
 
@@ -36,6 +36,10 @@ function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Serv
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
+    // A filtered-out or grant-locked tool is absent, not merely unlisted: knowing its name isn't enough.
+    if (!aggregator.listTools(clientFilter).some((t) => t.name === name)) {
+      throw new McpError(ErrorCode.InvalidParams, `Tool not available to this client: ${name}`);
+    }
     try {
       return await aggregator.callTool(name, args ?? {});
     } catch (err) {
@@ -256,9 +260,11 @@ function listenWithFallback(
 function parseToolFilterHeaders(req: http.IncomingMessage): ToolFilter | undefined {
   const include = req.headers[HEADER_TOOLS_INCLUDE] as string | undefined;
   const exclude = req.headers[HEADER_TOOLS_EXCLUDE] as string | undefined;
-  if (!include && !exclude) return undefined;
+  const grants = req.headers[HEADER_TOOLS_GRANTS] as string | undefined;
+  if (!include && !exclude && !grants) return undefined;
   const filter: ToolFilter = {};
   if (include) filter.include = splitCommaSeparated(include);
   if (exclude) filter.exclude = splitCommaSeparated(exclude);
+  if (grants) filter.grants = splitCommaSeparated(grants);
   return filter;
 }

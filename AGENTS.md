@@ -13,7 +13,8 @@ src/
   aggregator.ts   # Upstream client manager — connect, merge tools, route calls, in-flight reconnect
   server.ts      # Managed HTTP daemon — /health /status /mcp, sessions, idle shutdown, hot reload, port fallback
   daemon.ts       # Daemon spawn / supervisor — detached process, PID file, health-check loop
-  bridge.ts       # Stdio ↔ HTTP bridge (default mode) — auto-reconnect, forwards UNIMCP_INCLUDE/EXCLUDE as headers
+  bridge.ts       # Stdio ↔ HTTP bridge (default mode) — auto-reconnect, forwards UNIMCP_INCLUDE/EXCLUDE and held grants as headers
+  grants.ts       # Held grants (env + watched file), the globs they leave locked, the file watcher
   setup.ts        # `setup` command — register unimcp in client configs
   collect.ts      # `collect` command — read MCP configs from all clients, merge, output
   status.ts       # `status` command — list running daemons + loaded tools
@@ -24,7 +25,7 @@ src/
 bin/
   unimcp.js       # npm launcher: dynamic-imports dist/unimcp.js (the bundled output)
 tests/
-  *.test.ts       # Unit tests (bun test) — aggregator, config, setup, utils
+  *.test.ts       # Unit tests (bun test) — aggregator, config, grants, setup, utils
 .github/
   workflows/
     ci.yml        # Type check + unit tests on push/PR to main
@@ -298,6 +299,8 @@ SEP              = "__"                                 (aggregator.ts)
 - `aggregator.listTools(clientFilter?)` applies both the per-server filter (from `srv.include`/`srv.exclude`) AND the client filter (both must pass)
 - Clients without filter env vars see all tools (open default)
 - Direct HTTP callers (not via bridge) can set `X-Tools-Include` / `X-Tools-Exclude` headers directly
+- Grants (`grants.ts`): the config's top-level `grants` maps a grant to `server__tool` globs. The bridge sends the grants it holds (`UNIMCP_GRANTS` + `UNIMCP_GRANTS_FILE`) as `X-Tools-Grants`; the aggregator hides the globs of every grant not held — matched against the *prefixed* name, unlike include/exclude — so a request without the header holds nothing, and `tools/call` rejects a hidden tool. The bridge watches the grants file, reconnects with the new header on change, and sends `tools/list_changed`
+- The daemon rejects `tools/call` for any tool its client filter hides
 
 ### Per-server tool filtering
 

@@ -24,10 +24,13 @@ const ENV_VAR_RE = /\$\{(\w+)\}/g;
 export type ToolFilter = {
   include?: string[];
   exclude?: string[];
+  /** Grants the client holds; tools under any other grant in the config stay hidden. */
+  grants?: string[];
 };
 
 export const HEADER_TOOLS_INCLUDE = "x-tools-include";
 export const HEADER_TOOLS_EXCLUDE = "x-tools-exclude";
+export const HEADER_TOOLS_GRANTS = "x-tools-grants";
 
 export type StdioServer = {
   command: string;
@@ -60,6 +63,8 @@ export type ServerConfig = StdioServer | HttpServer | SseServer;
 
 export type Config = {
   mcpServers: Record<string, ServerConfig>;
+  /** Grant name → `server__tool` globs hidden from every client that doesn't hold that grant. */
+  grants?: Record<string, string[]>;
 };
 
 export type ResolveMcpFileOpts = {
@@ -87,18 +92,29 @@ export function resolveMcpFile(opts: ResolveMcpFileOpts): string {
 /** Parses the config as written, leaving `${VAR}` references intact. */
 export function loadRawConfig(filePath: string): Config {
   const parsed = JSON.parse(stripJsonComments(readRawConfig(filePath))) as Partial<Config>;
+  const grants = parseGrants(parsed?.grants, filePath);
   const servers = parsed?.mcpServers;
-  if (servers === undefined) return { mcpServers: {} };
+  if (servers === undefined) return { mcpServers: {}, grants };
   if (typeof servers !== "object" || servers === null || Array.isArray(servers)) {
     throw new Error(`Config "mcpServers" must be an object: ${filePath}`);
   }
-  return { mcpServers: servers };
+  return { mcpServers: servers, grants };
+}
+
+function parseGrants(raw: unknown, filePath: string): Record<string, string[]> | undefined {
+  if (raw === undefined) return undefined;
+  const isGlobList = (v: unknown) => Array.isArray(v) && v.every((p) => typeof p === "string");
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw) || !Object.values(raw).every(isGlobList)) {
+    throw new Error(`Config "grants" must map grant names to arrays of tool globs: ${filePath}`);
+  }
+  return raw as Record<string, string[]>;
 }
 
 /** Loads the config with `${VAR}` expanded, dropping servers whose references are unset. */
 export function loadConfig(filePath: string): Config {
+  const raw = loadRawConfig(filePath);
   const mcpServers: Record<string, ServerConfig> = {};
-  for (const [rawName, rawSrv] of Object.entries(loadRawConfig(filePath).mcpServers)) {
+  for (const [rawName, rawSrv] of Object.entries(raw.mcpServers)) {
     const { resolved, missing } = resolveEnvRefs({ name: rawName, srv: rawSrv });
     if (missing.length > 0) {
       if (rawSrv.enabled !== false) log(`[config] skipping '${rawName}' — unset env var(s): ${missing.join(", ")}`);
@@ -106,7 +122,7 @@ export function loadConfig(filePath: string): Config {
     }
     mcpServers[resolved.name] = resolved.srv;
   }
-  return { mcpServers };
+  return { mcpServers, grants: raw.grants };
 }
 
 /** Names of `${VAR}` references in a server config that are unset or empty. */

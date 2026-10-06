@@ -6,6 +6,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Minimatch } from "minimatch";
 import { type Config, type ServerConfig, type ToolFilter, isHttpServer, isSseServer } from "./config.js";
+import { lockedPatterns } from "./grants.js";
 import { log } from "./utils.js";
 
 export const SEP = "__";
@@ -68,9 +69,11 @@ export class Aggregator {
   private upstreams: Map<string, UpstreamEntry> = new Map();
   private toolCache: AggregatedTool[] | null = null;
   private clientFilterCache = new Map<string, AggregatedTool[]>();
+  private grants: Record<string, string[]> = {};
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   async connect(config: Config): Promise<void> {
+    this.grants = config.grants ?? {};
     const entries = Object.entries(config.mcpServers).filter(([_, srv]) => srv.enabled !== false);
     await Promise.all(entries.map(([name, srv]) => this.connectOne(name, srv)));
   }
@@ -174,11 +177,15 @@ export class Aggregator {
       this.toolCache = this.buildToolCache();
       this.clientFilterCache.clear();
     }
-    if (!clientFilter?.include && !clientFilter?.exclude) return this.toolCache;
-    const key = `${clientFilter.include?.join("\0") ?? ""}|${clientFilter.exclude?.join("\0") ?? ""}`;
+    // Grant locks are the daemon's to apply: a client that sends no grants holds none.
+    const locked = lockedPatterns(this.grants, new Set(clientFilter?.grants));
+    if (!clientFilter?.include && !clientFilter?.exclude && !locked.length) return this.toolCache;
+    const key = [clientFilter?.include, clientFilter?.exclude, locked].map((l) => l?.join("\0") ?? "").join("|");
     let cached = this.clientFilterCache.get(key);
     if (!cached) {
-      cached = this.toolCache.filter((t) => matchesFilter(t.originalName, clientFilter));
+      const lockedMatchers = compilePatterns(locked);
+      cached = this.toolCache.filter((t) =>
+        matchesFilter(t.originalName, clientFilter) && !lockedMatchers.some((m) => m.match(t.name)));
       this.clientFilterCache.set(key, cached);
     }
     return cached;

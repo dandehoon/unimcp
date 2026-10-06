@@ -9,9 +9,10 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { loadRawConfig, missingEnvVars, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE } from "./config.js";
+import { loadRawConfig, missingEnvVars, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, HEADER_TOOLS_GRANTS } from "./config.js";
 import { SEP } from "./aggregator.js";
 import { ensureDaemon } from "./daemon.js";
+import { heldGrants, watchGrantsFile } from "./grants.js";
 import { log, MCP_SERVER_IDENTITY } from "./utils.js";
 
 export type BridgeOptions = {
@@ -30,7 +31,7 @@ const TRANSPORT_ERROR_PATTERNS = [
 
 export async function runBridge(opts: BridgeOptions): Promise<void> {
   let daemonUrl = new URL(`http://${opts.host}:${opts.port}/mcp`);
-  const headers = buildFilterHeaders();
+  let headers = buildFilterHeaders();
 
   let client = await createClient(daemonUrl, headers);
   let lastReconnectAt = 0;
@@ -72,7 +73,7 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
 
   const server = new Server(
     MCP_SERVER_IDENTITY,
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: { listChanged: true } } }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -98,11 +99,31 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   const stdioTransport = new StdioServerTransport();
   await server.connect(stdioTransport);
 
+  // A grant added or revoked mid-session changes which tools this client may see: reconnect
+  // with the new grants and tell the client to re-list, so no restart is needed. Refreshes
+  // run one at a time, so a burst of file events can't land an older client last.
+  async function applyGrants(): Promise<void> {
+    const next = buildFilterHeaders();
+    if (JSON.stringify(next) === JSON.stringify(headers)) return;
+    const fresh = await createClient(daemonUrl, next);
+    const old = client;
+    client = fresh;
+    headers = next;
+    old.close().catch((err) => log("[bridge] old client close error:", String(err)));
+    await server.sendToolListChanged();
+    log("[bridge] grants changed — tool list refreshed");
+  }
+  let refreshing = Promise.resolve();
+  const closeWatcher = watchGrantsFile(process.env["UNIMCP_GRANTS_FILE"], () => {
+    refreshing = refreshing.then(applyGrants).catch((err) => log("[bridge] grant refresh failed:", String(err)));
+  });
+
   let exiting = false;
 
   function shutdown(): void {
     if (exiting) return;
     exiting = true;
+    void closeWatcher();
     client.close().catch((err) => log("[bridge] close error:", String(err)));
     process.exit(0);
   }
@@ -134,10 +155,12 @@ function isTransportError(err: unknown): boolean {
 function buildFilterHeaders(): Record<string, string> | undefined {
   const include = process.env["UNIMCP_INCLUDE"];
   const exclude = process.env["UNIMCP_EXCLUDE"];
-  if (!include && !exclude) return undefined;
+  const grants = [...heldGrants(process.env["UNIMCP_GRANTS"], process.env["UNIMCP_GRANTS_FILE"])].join(",");
+  if (!include && !exclude && !grants) return undefined;
   const headers: Record<string, string> = {};
   if (include) headers[HEADER_TOOLS_INCLUDE] = include;
   if (exclude) headers[HEADER_TOOLS_EXCLUDE] = exclude;
+  if (grants) headers[HEADER_TOOLS_GRANTS] = grants;
   return headers;
 }
 
