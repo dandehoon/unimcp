@@ -5,12 +5,13 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Minimatch } from "minimatch";
-import { type Config, type ServerConfig, type ToolFilter, isHttpServer, isSseServer } from "./config.js";
-import { log } from "./utils.js";
+import { type Config, type ServerConfig, type ToolFilter, isHttpServer, isSseServer, isOAuthServer } from "./config.js";
+import { lockedPatterns } from "./grants.js";
+import { AuthRequiredError, FileOAuthProvider } from "./oauth.js";
+import { log, VERSION } from "./utils.js";
 
 export const SEP = "__";
 const CLIENT_NAME = "unimcp";
-const CLIENT_VERSION = "1.0.0";
 const CONNECT_TIMEOUT_MS = 30_000;
 const CALL_TIMEOUT_MS = 60_000;
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -43,15 +44,17 @@ type UpstreamEntry = {
 
 type AggregatedTool = Tool & { upstreamName: string; originalName: string };
 
-const MATCH_ALL = [new Minimatch("*")];
+const MATCH_ALL = [new Minimatch("*", { dot: true })];
 const MATCH_NONE: Minimatch[] = [];
 const patternCache = new Map<string, Minimatch[]>();
+// Patterns are literal globs: no `!` negation (which would invert a grant lock) and no `#` comments.
+const PATTERN_OPTS = { nonegate: true, nocomment: true, dot: true };
 
 function compilePatterns(patterns: string[]): Minimatch[] {
   const key = patterns.join("\0");
   let compiled = patternCache.get(key);
   if (!compiled) {
-    compiled = patterns.map((p) => new Minimatch(p));
+    compiled = patterns.map((p) => new Minimatch(p, PATTERN_OPTS));
     patternCache.set(key, compiled);
   }
   return compiled;
@@ -68,9 +71,12 @@ export class Aggregator {
   private upstreams: Map<string, UpstreamEntry> = new Map();
   private toolCache: AggregatedTool[] | null = null;
   private clientFilterCache = new Map<string, AggregatedTool[]>();
+  private grants: Record<string, string[]> = {};
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private pendingReconnects = new Map<string, Promise<void>>();
 
   async connect(config: Config): Promise<void> {
+    this.grants = config.grants ?? {};
     const entries = Object.entries(config.mcpServers).filter(([_, srv]) => srv.enabled !== false);
     await Promise.all(entries.map(([name, srv]) => this.connectOne(name, srv)));
   }
@@ -94,11 +100,12 @@ export class Aggregator {
     } catch (err) {
       log(`[${name}] failed to connect:`, err);
       this.upstreams.set(name, {
-        name, client: new Client({ name: CLIENT_NAME, version: CLIENT_VERSION }), tools: [], config: srv,
+        name, client: new Client({ name: CLIENT_NAME, version: VERSION }), tools: [], config: srv,
         state: "failed", connectedAt: null,
         lastError: String(err), lastErrorAt: Date.now(), reconnectAttempts: 0,
       });
-      this.scheduleReconnect(name);
+      // Retrying can't help until the user authorizes; retryIfDown picks up their new tokens.
+      if (!(err instanceof AuthRequiredError)) this.scheduleReconnect(name);
     }
   }
 
@@ -120,7 +127,7 @@ export class Aggregator {
     entry.state = "reconnecting";
     const delay = Math.min(BACKOFF_BASE_MS * 2 ** entry.reconnectAttempts, BACKOFF_CAP_MS);
     entry.reconnectAttempts++;
-    const timer = setTimeout(() => this.attemptReconnect(name), delay);
+    const timer = setTimeout(() => void this.track(name, () => this.attemptReconnect(name)), delay);
     this.reconnectTimers.set(name, timer);
   }
 
@@ -143,7 +150,7 @@ export class Aggregator {
     } catch (err) {
       entry.lastError = String(err);
       entry.lastErrorAt = Date.now();
-      if (entry.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      if (entry.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS || err instanceof AuthRequiredError) {
         entry.state = "failed";
         log(`[${name}] reconnect failed permanently:`, err);
       } else {
@@ -174,14 +181,26 @@ export class Aggregator {
       this.toolCache = this.buildToolCache();
       this.clientFilterCache.clear();
     }
-    if (!clientFilter?.include && !clientFilter?.exclude) return this.toolCache;
-    const key = `${clientFilter.include?.join("\0") ?? ""}|${clientFilter.exclude?.join("\0") ?? ""}`;
+    // Grant locks are the daemon's to apply: a client that sends no grants holds none.
+    const locked = lockedPatterns(this.grants, new Set(clientFilter?.grants));
+    if (!clientFilter?.include && !clientFilter?.exclude && !locked.length) return this.toolCache;
+    const key = JSON.stringify([clientFilter?.include, clientFilter?.exclude, locked]);
     let cached = this.clientFilterCache.get(key);
     if (!cached) {
-      cached = this.toolCache.filter((t) => matchesFilter(t.originalName, clientFilter));
+      cached = this.toolCache.filter((t) => isVisibleToClient({ tool: t, clientFilter, locked }));
       this.clientFilterCache.set(key, cached);
     }
     return cached;
+  }
+
+  /** Whether a client may call a tool, judged by name: a server that is down lists no tools, yet calling one must still reach callTool's reconnect. */
+  isCallable(prefixedName: string, clientFilter?: ToolFilter): boolean {
+    const sep = prefixedName.indexOf(SEP);
+    const entry = sep > 0 ? this.upstreams.get(prefixedName.slice(0, sep)) : undefined;
+    if (!entry) return false;
+    const tool = { name: prefixedName, originalName: prefixedName.slice(sep + SEP.length) };
+    const locked = lockedPatterns(this.grants, new Set(clientFilter?.grants));
+    return matchesFilter(tool.originalName, serverFilter(entry.config)) && isVisibleToClient({ tool, clientFilter, locked });
   }
 
   async callTool(prefixedName: string, args: Record<string, unknown>): Promise<ReturnType<Client["callTool"]>> {
@@ -227,7 +246,28 @@ export class Aggregator {
     return [...this.upstreams.values()].some((e) => e.state === "reconnecting");
   }
 
-  private async onDemandReconnect(name: string, entry: UpstreamEntry): Promise<void> {
+  /** Reconnects a failed server now, e.g. once its OAuth tokens arrive. */
+  async retryIfDown(name: string): Promise<void> {
+    // An attempt already in flight may have read the store before the new tokens landed.
+    await this.pendingReconnects.get(name);
+    const entry = this.upstreams.get(name);
+    if (entry?.state === "failed") await this.onDemandReconnect(name, entry);
+  }
+
+  private onDemandReconnect(name: string, entry: UpstreamEntry): Promise<void> {
+    return this.track(name, () => this.reconnectNow(name, entry));
+  }
+
+  /** Concurrent attempts share one, so a server never ends up with two live clients. */
+  private track(name: string, run: () => Promise<void>): Promise<void> {
+    const inFlight = this.pendingReconnects.get(name);
+    if (inFlight) return inFlight;
+    const attempt = run().finally(() => this.pendingReconnects.delete(name));
+    this.pendingReconnects.set(name, attempt);
+    return attempt;
+  }
+
+  private async reconnectNow(name: string, entry: UpstreamEntry): Promise<void> {
     const timer = this.reconnectTimers.get(name);
     if (timer) { clearTimeout(timer); this.reconnectTimers.delete(name); }
 
@@ -252,8 +292,8 @@ export class Aggregator {
   }
 
   private async connectClient(name: string, srv: ServerConfig): Promise<{ client: Client; tools: Tool[] }> {
-    const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
-    const transport = buildTransport(srv);
+    const client = new Client({ name: CLIENT_NAME, version: VERSION });
+    const transport = buildTransport(name, srv);
     try {
       await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] connect timed out`);
       const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `[${name}] listTools timed out`);
@@ -269,8 +309,8 @@ export class Aggregator {
 
   private async connectViaSSE(name: string, srv: ServerConfig): Promise<{ client: Client; tools: Tool[] }> {
     log(`[${name}] StreamableHTTP failed, trying SSE fallback…`);
-    const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION });
-    const transport = buildSSETransport(srv);
+    const client = new Client({ name: CLIENT_NAME, version: VERSION });
+    const transport = buildSSETransport(name, srv);
     try {
       await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] SSE connect timed out`);
       const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `[${name}] SSE listTools timed out`);
@@ -297,18 +337,25 @@ export class Aggregator {
 
 // --- helpers ---
 
+type VisibilityCheck = { tool: { name: string; originalName: string }; clientFilter?: ToolFilter; locked: string[] };
+
+function isVisibleToClient({ tool, clientFilter, locked }: VisibilityCheck): boolean {
+  return matchesFilter(tool.originalName, clientFilter) && !compilePatterns(locked).some((m) => m.match(tool.name));
+}
+
 function serverFilter(srv: ServerConfig): ToolFilter | undefined {
   if (!srv.include && !srv.exclude) return undefined;
   return { include: srv.include, exclude: srv.exclude };
 }
 
-function buildTransport(srv: ServerConfig): Transport {
+function buildTransport(name: string, srv: ServerConfig): Transport {
   if (isSseServer(srv)) {
-    return buildSSETransport(srv);
+    return buildSSETransport(name, srv);
   }
   if (isHttpServer(srv)) {
     return new StreamableHTTPClientTransport(new URL(srv.url), {
       requestInit: { headers: srv.headers },
+      authProvider: isOAuthServer(srv) ? new FileOAuthProvider({ name, srv }) : undefined,
     });
   }
   return new StdioClientTransport({
@@ -318,18 +365,25 @@ function buildTransport(srv: ServerConfig): Transport {
   });
 }
 
-function buildSSETransport(srv: ServerConfig): SSEClientTransport {
+function buildSSETransport(name: string, srv: ServerConfig): SSEClientTransport {
   const headers = "headers" in srv ? srv.headers : undefined;
   const url = new URL((srv as { url: string }).url);
   return new SSEClientTransport(url, {
-    eventSourceInit: headers
-      ? { fetch: (input, init) => fetch(input, { ...init, headers: { ...(init?.headers as Record<string, string> ?? {}), ...headers } }) }
-      : undefined,
+    eventSourceInit: headers ? { fetch: (input, init) => fetch(input, { ...init, headers: withHeaders(init?.headers, headers) }) } : undefined,
     requestInit: headers ? { headers } : undefined,
+    authProvider: isOAuthServer(srv) ? new FileOAuthProvider({ name, srv }) : undefined,
   });
 }
 
+/** The SDK passes a `Headers` instance, which object spread would empty — dropping its bearer token. */
+function withHeaders(base: HeadersInit | undefined, extra: Record<string, string>): Headers {
+  const merged = new Headers(base);
+  for (const [k, v] of Object.entries(extra)) merged.set(k, v);
+  return merged;
+}
+
 function isAuthError(err: unknown): boolean {
+  if (err instanceof AuthRequiredError) return true;
   const msg = String(err).toLowerCase();
   return msg.includes("unauthorized") || msg.includes("forbidden") ||
     msg.includes("401") || msg.includes("403");

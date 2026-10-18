@@ -9,13 +9,15 @@ import {
   ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
-import { loadConfig, type ToolFilter, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, CONFIG_DIR, pidFilePath } from "./config.js";
+import { loadConfig, type ToolFilter, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, HEADER_TOOLS_GRANTS, CONFIG_DIR, pidFilePath } from "./config.js";
 import { Aggregator } from "./aggregator.js";
+import { watchTokenStore } from "./oauth.js";
 import { log, tryUnlink, splitCommaSeparated, writeFileSafe, PERMS_PRIVATE, MCP_SERVER_IDENTITY } from "./utils.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
 const READY_TIMEOUT_MS = 60_000;
 const FORCE_EXIT_TIMEOUT_MS = 5_000;
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 export type ManagedServerOptions = {
   port: number;
@@ -36,6 +38,10 @@ function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Serv
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
+    // A filtered-out or grant-locked tool is absent, not merely unlisted: knowing its name isn't enough.
+    if (!aggregator.isCallable(name, clientFilter)) {
+      throw new McpError(ErrorCode.InvalidParams, `Tool not available to this client: ${name}`);
+    }
     try {
       return await aggregator.callTool(name, args ?? {});
     } catch (err) {
@@ -91,6 +97,11 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   }
 
   const httpServer = http.createServer(async (req, res) => {
+    if (!isAllowedHost(req, opts.host)) {
+      res.writeHead(403).end("Forbidden host");
+      return;
+    }
+
     // envHash is the daemon's identity, not decoration: a bridge whose pid file went stale can
     // reach a daemon built from another session's secrets on the same fixed port, so it must be
     // able to tell whose daemon answered.
@@ -166,6 +177,17 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   log(`[server] listening on http://${opts.host}:${boundPort}/mcp`);
 
   let initializing = true;
+  let isReloading = false;
+  // `unimcp auth <name>` writes tokens from another process. Events arriving mid-build would reach
+  // an aggregator that is about to be replaced, so they wait for the build to finish.
+  const tokenEvents = new Set<string>();
+  const flushTokenEvents = () => {
+    if (!aggregator || initializing || isReloading) return;
+    for (const name of tokenEvents) void aggregator.retryIfDown(name);
+    tokenEvents.clear();
+  };
+  const closeTokenWatcher = watchTokenStore((name) => { tokenEvents.add(name); flushTokenEvents(); });
+
   try {
     const initial = await buildAggregator(opts.configPath);
     aggregator = initial.aggregator;
@@ -175,11 +197,11 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     aggregator = new Aggregator();
   } finally {
     initializing = false;
+    flushTokenEvents();
     resolveReady();
     if (activeSessions === 0) scheduleShutdown();
   }
 
-  let isReloading = false;
   const handleReload = async () => {
     if (isReloading || initializing) return;
     isReloading = true;
@@ -196,6 +218,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       log("[server] reload failed:", String(err));
     } finally {
       isReloading = false;
+      flushTokenEvents();
     }
   };
   watcher = watch(opts.configPath, { ignoreInitial: true });
@@ -210,7 +233,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     log(`[server] ${signal} — shutting down`);
     tryUnlink(pidFile);
     await aggregator?.disconnect();
-    await watcher?.close();
+    await Promise.all([watcher?.close(), closeTokenWatcher()]);
     httpServer.close();
     process.exit(0);
   }
@@ -253,12 +276,25 @@ function listenWithFallback(
   });
 }
 
+/** DNS rebinding guard: a web page that rebinds its own hostname to 127.0.0.1 still sends that
+ *  hostname, so a loopback daemon answers only requests addressed to a loopback name. */
+function isAllowedHost(req: http.IncomingMessage, bindHost: string): boolean {
+  if (!LOOPBACK_HOSTS.has(bindHost)) return true;
+  try {
+    return LOOPBACK_HOSTS.has(new URL(`http://${req.headers.host}`).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function parseToolFilterHeaders(req: http.IncomingMessage): ToolFilter | undefined {
   const include = req.headers[HEADER_TOOLS_INCLUDE] as string | undefined;
   const exclude = req.headers[HEADER_TOOLS_EXCLUDE] as string | undefined;
-  if (!include && !exclude) return undefined;
+  const grants = req.headers[HEADER_TOOLS_GRANTS] as string | undefined;
+  if (!include && !exclude && !grants) return undefined;
   const filter: ToolFilter = {};
   if (include) filter.include = splitCommaSeparated(include);
   if (exclude) filter.exclude = splitCommaSeparated(exclude);
+  if (grants) filter.grants = splitCommaSeparated(grants);
   return filter;
 }

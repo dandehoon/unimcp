@@ -1,12 +1,14 @@
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import path from "path";
+import pkg from "../package.json" with { type: "json" };
 
 /** Writes to stderr (stdout is reserved for MCP JSON-RPC messages). */
 export function log(...args: unknown[]): void {
   process.stderr.write(args.map(String).join(" ") + "\n");
 }
 
-export const MCP_SERVER_IDENTITY = { name: "unimcp", version: "1.0.0" } as const;
+export const VERSION: string = pkg.version;
+export const MCP_SERVER_IDENTITY = { name: "unimcp", version: VERSION } as const;
 
 export function splitCommaSeparated(value: string): string[] {
   return value.split(",").map((s) => s.trim()).filter(Boolean);

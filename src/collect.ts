@@ -36,7 +36,9 @@ export function runCollect(opts: CollectOptions): void {
   const json = toJson({ mcpServers: merged });
 
   if (opts.save) {
-    writeFileSafe(opts.mcpFilePath, json, PERMS_PRIVATE);
+    // Only the servers are collected; everything else in the file (grants) is the user's own.
+    const existing = readJsonFile(opts.mcpFilePath, stripJsonComments) ?? {};
+    writeFileSafe(opts.mcpFilePath, toJson({ ...existing, mcpServers: merged }), PERMS_PRIVATE);
     log(`[collect] saved ${count} server(s) to ${opts.mcpFilePath}`);
     return;
   }

@@ -1,4 +1,4 @@
-import { isHttpServer, isSseServer } from "./config.js";
+import { isHttpServer, isSseServer, isOAuthServer } from "./config.js";
 import type { HttpServer, StdioServer, SseServer, ServerConfig } from "./config.js";
 
 export function formatListLine(name: string, srv: ServerConfig): string {
@@ -16,6 +16,7 @@ export function formatServer(srv: ServerConfig): string[] {
 
 export function formatSseServer(srv: SseServer): string[] {
   const lines: string[] = [`type:  sse`, `url:   ${maskUrl(srv.url)}`];
+  if (isOAuthServer(srv)) lines.push(`auth:  oauth`);
   const headerEntries = srv.headers ? Object.entries(srv.headers) : [];
   if (headerEntries.length > 0) {
     lines.push(`headers:`);
@@ -28,6 +29,7 @@ export function formatSseServer(srv: SseServer): string[] {
 
 export function formatHttpServer(srv: HttpServer): string[] {
   const lines: string[] = [`type:  http`, `url:   ${maskUrl(srv.url)}`];
+  if (isOAuthServer(srv)) lines.push(`auth:  oauth`);
   const headerEntries = srv.headers ? Object.entries(srv.headers) : [];
   if (headerEntries.length > 0) {
     lines.push(`headers:`);
