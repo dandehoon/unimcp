@@ -9,6 +9,7 @@ import { runCollect } from "./collect.js";
 import { resolveMcpFile, computeEnvHash } from "./config.js";
 import { runStatus } from "./status.js";
 import { runStop } from "./stop.js";
+import { runAuth } from "./auth.js";
 import { cmdList, cmdGet, cmdAdd, cmdAddJson, cmdRemove } from "./mcp.js";
 import type { AddOpts } from "./mcp.js";
 import { log, splitCommaSeparated, collectRepeatable } from "./utils.js";
@@ -31,7 +32,7 @@ program
   .option("--host <string>", "Host for the HTTP server (default: UNIMCP_HOST env or 127.0.0.1)")
   .action(async (opts: { mcpFile?: string; envHash?: string; http?: boolean; daemon?: boolean; port?: string; host?: string }) => {
     const port = opts.port !== undefined ? Number(opts.port) : Number(process.env.UNIMCP_PORT ?? process.env.PORT ?? 4848);
-    const host = opts.host ?? process.env.UNIMCP_HOST ?? process.env.HOST ?? "127.0.0.1";
+    const host = opts.host ?? process.env.UNIMCP_HOST ?? "127.0.0.1";
     const configPath = resolveConfigPath(opts.mcpFile);
     const envHash = resolveEnvHash(opts.envHash, configPath);
 
@@ -51,7 +52,7 @@ program
     const g = globalOpts(cmd);
     const configPath = resolveConfigPath(g.mcpFile);
     const envHash = resolveEnvHash(g.envHash, configPath);
-    await runStatus({ envHash, host: process.env.UNIMCP_HOST ?? process.env.HOST ?? "127.0.0.1", configPath });
+    await runStatus({ envHash, host: process.env.UNIMCP_HOST ?? "127.0.0.1", configPath });
   });
 
 program
@@ -115,6 +116,13 @@ program
   .description("Remove a server")
   .action((name: string, _opts, cmd) => {
     cmdRemove(name, resolveConfigPath(globalOpts(cmd).mcpFile));
+  });
+
+program
+  .command("auth <name>")
+  .description("Authorize an OAuth server in the browser and store its tokens")
+  .action(async (name: string, _opts, cmd) => {
+    await runAuth(name, resolveConfigPath(globalOpts(cmd).mcpFile));
   });
 
 // --- helpers ---

@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { readFileSync } from "fs";
 import path from "path";
 import os from "os";
-import { log, stripJsonComments } from "./utils.js";
+import { log, stripJsonComments, VERSION } from "./utils.js";
 
 const MAX_CONFIG_BYTES = 1_048_576; // 1 MB
 
@@ -41,23 +41,29 @@ export type StdioServer = {
   exclude?: string[];
 };
 
-export type HttpServer = {
-  type: "http";
+/** OAuth client settings; omit `clientId` to use dynamic client registration. */
+export type OAuthConfig = {
+  clientId?: string;
+  clientSecret?: string;
+  scopes?: string[];
+  callbackPort?: number;
+};
+
+type RemoteServerFields = {
   url: string;
   headers?: Record<string, string>;
+  /** `"oauth"` (or an `oauth` block) authorizes via `unimcp auth <name>`. */
+  auth?: "oauth";
+  oauth?: OAuthConfig;
   enabled?: boolean;
   include?: string[];
   exclude?: string[];
 };
 
-export type SseServer = {
-  type: "sse";
-  url: string;
-  headers?: Record<string, string>;
-  enabled?: boolean;
-  include?: string[];
-  exclude?: string[];
-};
+/** `type` may be omitted: a `url` without one is HTTP. */
+export type HttpServer = RemoteServerFields & { type?: "http" };
+
+export type SseServer = RemoteServerFields & { type: "sse" };
 
 export type ServerConfig = StdioServer | HttpServer | SseServer;
 
@@ -75,11 +81,15 @@ export type ResolveMcpFileOpts = {
 };
 
 export function isHttpServer(s: ServerConfig): s is HttpServer {
-  return "type" in s && s.type === "http";
+  return "url" in s && (s.type === undefined || s.type === "http");
 }
 
 export function isSseServer(s: ServerConfig): s is SseServer {
   return "type" in s && s.type === "sse";
+}
+
+export function isOAuthServer(s: ServerConfig): s is HttpServer | SseServer {
+  return "url" in s && (s.auth === "oauth" || s.oauth !== undefined);
 }
 
 export function resolveMcpFile(opts: ResolveMcpFileOpts): string {
@@ -103,9 +113,10 @@ export function loadRawConfig(filePath: string): Config {
 
 function parseGrants(raw: unknown, filePath: string): Record<string, string[]> | undefined {
   if (raw === undefined) return undefined;
-  const isGlobList = (v: unknown) => Array.isArray(v) && v.every((p) => typeof p === "string");
+  // An empty list or pattern would lock nothing while looking like a lock.
+  const isGlobList = (v: unknown) => Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === "string" && p.trim() !== "");
   if (typeof raw !== "object" || raw === null || Array.isArray(raw) || !Object.values(raw).every(isGlobList)) {
-    throw new Error(`Config "grants" must map grant names to arrays of tool globs: ${filePath}`);
+    throw new Error(`Config "grants" must map grant names to non-empty arrays of tool globs: ${filePath}`);
   }
   return raw as Record<string, string[]>;
 }
@@ -141,7 +152,8 @@ export function computeEnvHash(filePath: string): string {
   for (const match of content.matchAll(ENV_VAR_RE)) {
     varNames.add(match[1]);
   }
-  const record: Record<string, string> = { __config: path.resolve(filePath) };
+  // The version keeps an upgraded bridge off a daemon still running the old code.
+  const record: Record<string, string> = { __config: path.resolve(filePath), __version: VERSION };
   for (const name of [...varNames].sort()) {
     record[name] = process.env[name] ?? "";
   }

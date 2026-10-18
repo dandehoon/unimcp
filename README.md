@@ -242,6 +242,28 @@ A top-level `grants` map hides tools from every client until it holds the grant 
 
 A client holds the grants in `UNIMCP_GRANTS` plus the lines of `UNIMCP_GRANTS_FILE`; the bridge sends them to the daemon, which does the hiding — a client that sends none holds none, and a locked tool can't be called by name either. The bridge watches the grants file: when it changes, it reconnects with the new grants and sends `notifications/tools/list_changed`, so a grant given or revoked mid-session takes effect without restarting the client.
 
+Grants are a guardrail against an agent reaching for a tool it shouldn't, not a security boundary: the daemon trusts the grants a request claims, and any local process — including an agent with a shell — can claim any grant or edit the grants file. Keep tools that must never be reachable out of the config.
+
+### OAuth servers
+
+Remote servers that use OAuth take `"auth": "oauth"`; authorize once with `unimcp auth <name>`, which opens the browser and stores tokens (owner-only) under `~/.config/unimcp/oauth/`. Running daemons pick the tokens up without a restart, and refresh them as they expire.
+
+```jsonc
+{
+  "mcpServers": {
+    // Dynamic client registration — no client ID needed
+    "jira": { "url": "https://mcp.atlassian.com/v1/mcp", "auth": "oauth" },
+    // Servers without dynamic registration need a pre-registered client
+    "slack": {
+      "url": "https://mcp.slack.com/mcp",
+      "oauth": { "clientId": "<id>", "clientSecret": "${SLACK_CLIENT_SECRET}", "scopes": ["chat:write"], "callbackPort": 3118 }
+    }
+  }
+}
+```
+
+The callback is `http://localhost:<callbackPort>/callback` (default port 4849); a pre-registered client must list it as a redirect URL.
+
 ## Commands
 
 ```
@@ -251,6 +273,7 @@ unimcp --http              Run as HTTP daemon directly (no bridge)
 unimcp status              Show running daemon info and loaded tools
 unimcp stop [id]           Stop the daemon for current context, an ID prefix, or --all
 unimcp restart [id]        Stop the daemon; next client connection respawns it
+unimcp auth <name>         Authorize an OAuth server in the browser
 
 # Client integration
 unimcp setup               Register unimcp in client configs (claude/cursor/copilot/opencode)

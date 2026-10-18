@@ -46,27 +46,55 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
     }
     lastReconnectAt = now;
     log("[bridge] attempting reconnect to daemon...");
-    client.close().catch((err) => log("[bridge] old client close error:", String(err)));
     try {
-      client = await createClient(daemonUrl, headers);
+      await switchClient(daemonUrl);
       log("[bridge] reconnected successfully");
     } catch {
       // Daemon is likely dead — attempt re-spawn
       log("[bridge] daemon unreachable — re-spawning...");
       const newPort = await ensureDaemon({ port: opts.port, host: opts.host, configPath: opts.configPath, envHash: opts.envHash });
-      daemonUrl = new URL(`http://${opts.host}:${newPort}/mcp`);
-      client = await createClient(daemonUrl, headers);
+      await switchClient(new URL(`http://${opts.host}:${newPort}/mcp`));
       log(`[bridge] daemon re-spawned on port ${newPort}`);
     }
   }
 
+  /** Connects with the grants held right now, so no reconnect can resurrect a revoked one. */
+  async function switchClient(url: URL): Promise<void> {
+    const next = buildFilterHeaders();
+    const fresh = await createClient(url, next);
+    const old = client;
+    client = fresh;
+    daemonUrl = url;
+    old.close().catch((err) => log("[bridge] old client close error:", String(err)));
+    if (JSON.stringify(next) === JSON.stringify(headers)) return;
+    headers = next;
+    await server.sendToolListChanged();
+    log("[bridge] grants changed — tool list refreshed");
+  }
+
+  // A grant added or revoked mid-session changes which tools this client may see. Every request
+  // re-checks the grants before it runs, so a missed or failed file event can't leave a revoked
+  // grant in use; the watcher only makes the client re-list promptly.
+  async function syncGrants(): Promise<void> {
+    if (JSON.stringify(buildFilterHeaders()) !== JSON.stringify(headers)) await switchClient(daemonUrl);
+  }
+
+  // Client switches run one at a time, so a burst of events can't land an older client last.
+  let queue = Promise.resolve();
+  function serialized(fn: () => Promise<void>): Promise<void> {
+    const run = queue.then(fn);
+    queue = run.catch(() => {});
+    return run;
+  }
+
   async function withReconnect<T>(fn: () => Promise<T>): Promise<T> {
     try {
+      await serialized(syncGrants);
       return await fn();
     } catch (err) {
       if (err instanceof McpError) throw err;
       if (!isTransportError(err)) throw err;
-      await reconnect();
+      await serialized(reconnect);
       return await fn();
     }
   }
@@ -99,23 +127,8 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   const stdioTransport = new StdioServerTransport();
   await server.connect(stdioTransport);
 
-  // A grant added or revoked mid-session changes which tools this client may see: reconnect
-  // with the new grants and tell the client to re-list, so no restart is needed. Refreshes
-  // run one at a time, so a burst of file events can't land an older client last.
-  async function applyGrants(): Promise<void> {
-    const next = buildFilterHeaders();
-    if (JSON.stringify(next) === JSON.stringify(headers)) return;
-    const fresh = await createClient(daemonUrl, next);
-    const old = client;
-    client = fresh;
-    headers = next;
-    old.close().catch((err) => log("[bridge] old client close error:", String(err)));
-    await server.sendToolListChanged();
-    log("[bridge] grants changed — tool list refreshed");
-  }
-  let refreshing = Promise.resolve();
   const closeWatcher = watchGrantsFile(process.env["UNIMCP_GRANTS_FILE"], () => {
-    refreshing = refreshing.then(applyGrants).catch((err) => log("[bridge] grant refresh failed:", String(err)));
+    serialized(syncGrants).catch((err) => log("[bridge] grant refresh failed:", String(err)));
   });
 
   let exiting = false;

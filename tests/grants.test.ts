@@ -41,6 +41,14 @@ describe("config grants", () => {
     expect(loadConfig(file).grants).toEqual({ proddb: ["proddb__*"] });
   });
 
+  test("rejects an empty glob list or pattern, which would lock nothing", () => {
+    for (const globs of [[], [""], ["  "]]) {
+      const file = join(dir, "empty-grants.json");
+      writeFileSync(file, JSON.stringify({ mcpServers: {}, grants: { proddb: globs } }));
+      expect(() => loadRawConfig(file)).toThrow(/grants/);
+    }
+  });
+
   test("rejects a grant that is not a glob list", () => {
     const file = join(dir, "bad-grants.json");
     writeFileSync(file, JSON.stringify({ mcpServers: {}, grants: { proddb: "proddb__*" } }));
@@ -53,10 +61,11 @@ describe("Aggregator grant locks", () => {
     const agg = new Aggregator();
     await agg.connect({ mcpServers: {}, grants });
     const tool = (name: string) => ({ name, inputSchema: { type: "object" as const } });
-    // Upstreams are private and only filled by a live connection; seed two directly.
+    // Upstreams are private and only filled by a live connection; seed them directly.
     const upstreams = (agg as unknown as { upstreams: Map<string, unknown> }).upstreams;
-    upstreams.set("proddb", { name: "proddb", tools: [tool("find")] });
-    upstreams.set("portal", { name: "portal", tools: [tool("get_x"), tool("create_x")] });
+    upstreams.set("proddb", { name: "proddb", tools: [tool("find")], config: { command: "x" }, state: "connected" });
+    upstreams.set("portal", { name: "portal", tools: [tool("get_x"), tool("create_x")], config: { command: "x" }, state: "connected" });
+    upstreams.set("down", { name: "down", tools: [], config: { command: "x", exclude: ["drop"] }, state: "failed" });
     return agg;
   }
   const names = (agg: Aggregator, grants?: string[]) => agg.listTools(grants && { grants }).map((t) => t.name).sort();
@@ -74,5 +83,20 @@ describe("Aggregator grant locks", () => {
   test("globs match the prefixed name, not the bare one", async () => {
     const agg = await aggregatorWith({ write: ["create_*"] });
     expect(names(agg)).toEqual(["portal__create_x", "portal__get_x", "proddb__find"]);
+  });
+
+  test("negation and comment syntax is literal, never inverting a lock", async () => {
+    expect(names(await aggregatorWith({ x: ["!proddb__find"] }))).toEqual(["portal__create_x", "portal__get_x", "proddb__find"]);
+    expect(names(await aggregatorWith({ x: ["#proddb__*", "proddb__*"] }))).toEqual(["portal__create_x", "portal__get_x"]);
+  });
+
+  test("a tool of a server that is down stays callable, so the call can reconnect it", async () => {
+    const agg = await aggregatorWith({ proddb: ["proddb__*"] });
+    expect(agg.isCallable("down__query")).toBe(true);
+    expect(agg.isCallable("down__drop")).toBe(false);
+    expect(agg.isCallable("proddb__find")).toBe(false);
+    expect(agg.isCallable("proddb__find", { grants: ["proddb"] })).toBe(true);
+    expect(agg.isCallable("portal__get_x", { exclude: ["get_*"] })).toBe(false);
+    expect(agg.isCallable("nowhere__x")).toBe(false);
   });
 });

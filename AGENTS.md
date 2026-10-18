@@ -15,6 +15,8 @@ src/
   daemon.ts       # Daemon spawn / supervisor — detached process, PID file, health-check loop
   bridge.ts       # Stdio ↔ HTTP bridge (default mode) — auto-reconnect, forwards UNIMCP_INCLUDE/EXCLUDE and held grants as headers
   grants.ts       # Held grants (env + watched file), the globs they leave locked, the file watcher
+  oauth.ts        # File-backed OAuthClientProvider (~/.config/unimcp/oauth/<name>.<urlHash>.json), AuthRequiredError
+  auth.ts         # `auth <name>` command — browser OAuth flow with a localhost callback
   setup.ts        # `setup` command — register unimcp in client configs
   collect.ts      # `collect` command — read MCP configs from all clients, merge, output
   status.ts       # `status` command — list running daemons + loaded tools
@@ -264,8 +266,8 @@ await client.connect(new StdioClientTransport({ command, args, env }));
 - `.env` is **gitignored** — no longer auto-loaded; secrets must be set in the shell environment before launching unimcp. `${VAR}` in `unimcp.json` is expanded from `process.env` at load time; a server referencing an unset or empty var is **skipped entirely** (no fallback, no partial config) — see `loadConfig()` vs `loadRawConfig()` in `config.ts`.
 - Config resolution order: `./unimcp.json` (local cwd) > `--mcp-file` flag / `UNIMCP_CONFIG` env > `~/.config/unimcp/unimcp.json` (global default). The `DEFAULT_MCP_FILE` exported from `config.ts` points to the global path; local resolution is in `resolveMcpFile()` in `index.ts`.
 - Daemon pid files live at **`~/.config/unimcp/daemon.<envHash>.pid`** (not in cwd)
-  - `envHash` is an 8-char lowercase hex SHA-256 over `JSON.stringify({ __config: <abs path of unimcp.json>, ...sorted ${VAR} → process.env[VAR] map })` — see `computeEnvHash()` in `config.ts`
-  - **Both inputs matter**: a different config file path *or* a different resolved value for any referenced env var produces a distinct hash → distinct daemon
+  - `envHash` is an 8-char lowercase hex SHA-256 over `JSON.stringify({ __config: <abs path of unimcp.json>, __version: <package version>, ...sorted ${VAR} → process.env[VAR] map })` — see `computeEnvHash()` in `config.ts`
+  - **All inputs matter**: a different config file path, unimcp version, *or* resolved value for any referenced env var produces a distinct hash → distinct daemon (an upgraded bridge never reuses an old daemon)
   - Variables referenced but unset resolve to `""` for hashing (they still contribute to the hash, even though the owning server is skipped at load); unreferenced env vars are ignored
   - Format: `"<pid>:<port>"` e.g. `"94663:4848"` or `"94844:52341"` (after port fallback)
   - `pidFilePath(envHash)` in `config.ts` is the single source of truth for the path; called from both `server.ts` and `daemon.ts`
@@ -300,7 +302,16 @@ SEP              = "__"                                 (aggregator.ts)
 - Clients without filter env vars see all tools (open default)
 - Direct HTTP callers (not via bridge) can set `X-Tools-Include` / `X-Tools-Exclude` headers directly
 - Grants (`grants.ts`): the config's top-level `grants` maps a grant to `server__tool` globs. The bridge sends the grants it holds (`UNIMCP_GRANTS` + `UNIMCP_GRANTS_FILE`) as `X-Tools-Grants`; the aggregator hides the globs of every grant not held — matched against the *prefixed* name, unlike include/exclude — so a request without the header holds nothing, and `tools/call` rejects a hidden tool. The bridge watches the grants file, reconnects with the new header on change, and sends `tools/list_changed`
-- The daemon rejects `tools/call` for any tool its client filter hides
+- The daemon rejects `tools/call` for any tool its client filter hides (`aggregator.isCallable`, judged by name so a down server's tools still reach the reconnect)
+- Grants are a guardrail, not a security boundary: the daemon trusts the claimed `X-Tools-Grants`. Grant globs are literal (`nonegate`, `nocomment`); empty lists/patterns are rejected at load
+- A loopback-bound daemon answers only requests whose `Host` is a loopback name (DNS rebinding guard); the host comes from `--host`/`UNIMCP_HOST` only, never the generic `HOST`
+- `collect --save` replaces `mcpServers` only, keeping the file's other keys (`grants`)
+
+### OAuth servers
+
+- An HTTP/SSE server with `"auth": "oauth"` or an `oauth` block (`clientId`, `clientSecret`, `scopes`, `callbackPort`; default port 4849) gets a `FileOAuthProvider`. A `url` without `type` is HTTP.
+- `unimcp auth <name>` runs the browser flow and writes tokens; the daemon is headless — without tokens it fails with `AuthRequiredError` (no retry loop) and connects when it sees the token file change (`retryIfDown`). Refresh is the SDK's, on 401.
+- No `clientId` → dynamic client registration; servers without DCR (e.g. Slack) need `clientId`/`clientSecret`.
 
 ### Per-server tool filtering
 
