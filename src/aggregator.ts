@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Minimatch } from "minimatch";
-import { type Config, type GrantRule, type ProfileVars, type ServerConfig, type ToolFilter, isHttpServer } from "./config.js";
+import { type Config, type GrantRule, type Profile, type ServerConfig, type ToolFilter, isHttpServer } from "./config.js";
 import { GLOB_OPTS, lockedPatterns, lockingGrant } from "./grants.js";
 import { PROFILE_ARG, type ProfileGroup, expandProfiles, routeProfile, takesProfileArg, withProfileArg, withoutPinnedArgs } from "./profiles.js";
 import { AuthRequiredError } from "./oauth.js";
@@ -89,7 +89,7 @@ export class Aggregator {
   }
 
   /** The first member connects now, for the tool schemas every member shares; the rest on first call. */
-  private async connectGroup({ name, srv, profiles }: { name: string; srv: ServerConfig; profiles: Record<string, ProfileVars> }): Promise<void> {
+  private async connectGroup({ name, srv, profiles }: { name: string; srv: ServerConfig; profiles: Record<string, Profile> }): Promise<void> {
     let expanded: ReturnType<typeof expandProfiles>;
     try {
       expanded = expandProfiles(name, srv, profiles);

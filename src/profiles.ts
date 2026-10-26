@@ -1,5 +1,5 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { Config, ProfileVars, ServerConfig } from "./config.js";
+import type { Config, Profile, ProfileVars, ServerConfig } from "./config.js";
 
 /** The argument that picks a profile on every call to a server with profiles. */
 export const PROFILE_ARG = "profile";
@@ -13,6 +13,8 @@ const TEMPLATE_KEYS = ["command", "args", "env", "url", "headers", "oauth"] as c
 export type ProfileGroup = {
   name: string;
   profiles: string[];
+  /** Profile → what it is, for those the config describes. */
+  descriptions: Record<string, string>;
   /** The server's own config: its filters and pinned args apply to every member. */
   config: ServerConfig;
 };
@@ -22,11 +24,12 @@ export type Member = { name: string; srv: ServerConfig };
 export const memberName = (server: string, profile: string): string => `${server}.${profile}`;
 
 /** One member per profile: the server's config with each `{var}` filled from that profile; throws on an invalid group. */
-export function expandProfiles(name: string, srv: ServerConfig, profiles: Record<string, ProfileVars>): { group: ProfileGroup; members: Member[] } {
+export function expandProfiles(name: string, srv: ServerConfig, profiles: Record<string, Profile>): { group: ProfileGroup; members: Member[] } {
   if (srv.pinArgs && PROFILE_ARG in srv.pinArgs) throw new Error(`"${PROFILE_ARG}" can't be pinned on a server with profiles`);
   const names = Object.keys(profiles);
-  const members = names.map((p) => ({ name: memberName(name, p), srv: fillVars(srv, profiles[p], p) }));
-  return { group: { name, profiles: names, config: srv }, members };
+  const members = names.map((p) => ({ name: memberName(name, p), srv: fillVars(srv, profiles[p].vars, p) }));
+  const descriptions = Object.fromEntries(names.flatMap((p) => (profiles[p].description ? [[p, profiles[p].description]] : [])));
+  return { group: { name, profiles: names, descriptions, config: srv }, members };
 }
 
 /** Finds a server by name, including a profile member (`server.profile`) — the name `unimcp auth` takes. */
@@ -38,16 +41,18 @@ export function findServer(config: Config, name: string): ServerConfig | undefin
   const srv = dot > 0 ? config.mcpServers[server] : undefined;
   const profiles = config.profiles?.[server];
   if (!srv || !profiles || !Object.hasOwn(profiles, profile)) return undefined;
-  return fillVars(srv, profiles[profile], profile);
+  return fillVars(srv, profiles[profile].vars, profile);
 }
 
 /** Whether a tool already takes an argument named like the selector, which would shadow it. */
 export const takesProfileArg = (tool: Tool): boolean => Object.hasOwn(tool.inputSchema.properties ?? {}, PROFILE_ARG);
 
-/** The selector added as a required argument listing every profile. */
+/** The selector added as a required argument listing the group's profiles, each with its description. */
 export function withProfileArg(tool: Tool, group: ProfileGroup): Tool {
   const { properties = {}, required = [] } = tool.inputSchema;
-  const selector = { type: "string", enum: group.profiles, description: `Which ${group.name} profile to use` };
+  const described = group.profiles.filter((p) => group.descriptions[p]).map((p) => `${p}: ${group.descriptions[p]}`);
+  const description = [`Which ${group.name} profile to use`, ...described].join("\n- ");
+  const selector = { type: "string", enum: group.profiles, description };
   return {
     ...tool,
     inputSchema: { ...tool.inputSchema, properties: { [PROFILE_ARG]: selector, ...properties }, required: [PROFILE_ARG, ...required] },

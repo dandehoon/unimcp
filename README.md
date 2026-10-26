@@ -130,13 +130,13 @@ A grant written as `{ "server", "vars" }` is a profile of that server: one copy 
     },
   },
   "grants": {
-    "prod": { "server": "mongo", "vars": { "uri": "$(pass show mongo/prod)" } },
+    "prod": { "server": "mongo", "vars": { "uri": "$(pass show mongo/prod)" }, "description": "orders and users, production" },
     "staging": { "server": "mongo", "vars": { "uri": "$(pass show mongo/staging)" } },
   },
 }
 ```
 
-Clients see `mongo__find` once, with a required `profile` argument listing the profiles they hold; a client holding none sees no `mongo` tools, and a call naming a profile needs that grant. A server with no profile grants is listed as itself. At startup, profiles connect in order until one succeeds, to supply the tool schemas; the others connect on their first call. Authorize an OAuth profile with `unimcp auth <server>.<profile>`.
+Clients see `mongo__find` once, with a required `profile` argument listing the profiles they hold, each `description` included in the argument's own, so an agent knows what it picks; a client holding none sees no `mongo` tools, and a call naming a profile needs that grant. A server with no profile grants is listed as itself. At startup, profiles connect in order until one succeeds, to supply the tool schemas; the others connect on their first call. Authorize an OAuth profile with `unimcp auth <server>.<profile>`.
 
 Grants are a guardrail, not a security boundary: any local process can claim any grant. Leave tools that must never be reachable out of the config.
 

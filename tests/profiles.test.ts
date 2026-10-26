@@ -12,8 +12,8 @@ const mongo: ServerConfig = {
   pinArgs: { connectionId: "preconfigured" },
 };
 const profiles = {
-  main: { uri: "$(pw get main)", app: "a" },
-  bp: { uri: "$(pw get bp)", app: "b" },
+  main: { vars: { uri: "$(pw get main)", app: "a" }, description: "ads, prod" },
+  bp: { vars: { uri: "$(pw get bp)", app: "b" } },
 };
 
 const find: Tool = {
@@ -32,8 +32,8 @@ describe("expandProfiles", () => {
   });
 
   test("rejects a var the profile doesn't set, and a pinned selector", () => {
-    expect(() => expandProfiles("mongo", mongo, { main: { uri: "x" } })).toThrow(/profile 'main' sets no "app" var/);
-    expect(() => expandProfiles("s", { command: "x", pinArgs: { profile: "a" } }, { a: {} })).toThrow(/pinned/);
+    expect(() => expandProfiles("mongo", mongo, { main: { vars: { uri: "x" } } })).toThrow(/profile 'main' sets no "app" var/);
+    expect(() => expandProfiles("s", { command: "x", pinArgs: { profile: "a" } }, { a: { vars: {} } })).toThrow(/pinned/);
   });
 });
 
@@ -55,7 +55,7 @@ describe("tool schema rewrites", () => {
     const tool = withProfileArg(withoutPinnedArgs(find, mongo.pinArgs), group);
     expect(Object.keys(tool.inputSchema.properties ?? {})).toEqual(["profile", "collection"]);
     expect(tool.inputSchema.required).toEqual(["profile", "collection"]);
-    expect(tool.inputSchema.properties?.profile).toMatchObject({ enum: ["main", "bp"] });
+    expect(tool.inputSchema.properties?.profile).toMatchObject({ enum: ["main", "bp"], description: "Which mongo profile to use\n- main: ads, prod" });
   });
 });
 
