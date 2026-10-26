@@ -2,15 +2,18 @@ import http from "http";
 import { spawn } from "child_process";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { loadConfig, isOAuthServer } from "./config.js";
+import { findServer } from "./profiles.js";
 import { FileOAuthProvider } from "./oauth.js";
+import { substituteCommands } from "./substitute.js";
 import { log } from "./utils.js";
 
 const CALLBACK_TIMEOUT_MS = 5 * 60_000;
 
 /** `unimcp auth <name>` — runs the browser OAuth flow and stores tokens for the daemon to use. */
 export async function runAuth(name: string, configPath: string): Promise<void> {
-  const srv = loadConfig(configPath).mcpServers[name];
-  if (!srv) throw new Error(`Server '${name}' not found (or skipped) in ${configPath}`);
+  const found = findServer(loadConfig(configPath), name);
+  if (!found) throw new Error(`Server '${name}' not found (or skipped) in ${configPath} — a server with profiles is authorized per profile: <server>.<profile>`);
+  const srv = await substituteCommands(found);
   if (!isOAuthServer(srv)) throw new Error(`Server '${name}' is not configured with "auth": "oauth"`);
 
   // Existing tokens stay on disk, serving running daemons, until this run replaces them.

@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { heldGrants, lockedPatterns } from "../src/grants.js";
+import { heldGrants, lockedPatterns, lockingGrant } from "../src/grants.js";
 import { loadConfig, loadRawConfig } from "../src/config.js";
 import { Aggregator } from "../src/aggregator.js";
 
@@ -31,6 +31,30 @@ describe("lockedPatterns", () => {
   test("no grants config locks nothing", () => {
     expect(lockedPatterns(undefined, new Set())).toEqual([]);
   });
+
+  test("argument rules hide nothing", () => {
+    expect(lockedPatterns({ main: [{ tool: "mongo__*", args: { db: "main" } }] }, new Set())).toEqual([]);
+  });
+});
+
+describe("lockingGrant", () => {
+  const grants = { main: [{ tool: "mongo__*", args: { db: "main" } }], bp: [{ tool: "mongo__*", args: { db: "bp" } }] };
+  const call = (args: Record<string, unknown>) => ({ name: "mongo__find", args });
+
+  test("names the unheld grant whose rule matches every arg", () => {
+    expect(lockingGrant(grants, new Set(), call({ db: "main", collection: "x" }))).toBe("main");
+    expect(lockingGrant(grants, new Set(["main"]), call({ db: "main" }))).toBeUndefined();
+    expect(lockingGrant(grants, new Set(["main"]), call({ db: "bp" }))).toBe("bp");
+  });
+
+  test("a call no rule matches is open", () => {
+    expect(lockingGrant(grants, new Set(), call({ db: "other" }))).toBeUndefined();
+    expect(lockingGrant(grants, new Set(), { name: "slack__send", args: { db: "main" } })).toBeUndefined();
+  });
+
+  test("a `!` glob is literal, never inverting a lock", () => {
+    expect(lockingGrant({ x: [{ tool: "!mongo__find", args: { db: "main" } }] }, new Set(), call({ db: "main" }))).toBeUndefined();
+  });
 });
 
 describe("config grants", () => {
@@ -53,6 +77,40 @@ describe("config grants", () => {
     const file = join(dir, "bad-grants.json");
     writeFileSync(file, JSON.stringify({ mcpServers: {}, grants: { proddb: "proddb__*" } }));
     expect(() => loadRawConfig(file)).toThrow(/grants/);
+  });
+
+  test("accepts argument rules; rejects ones that would lock nothing", () => {
+    const file = join(dir, "arg-grants.json");
+    const good = { main: ["x__*", { tool: "mongo__*", args: { db: "main" } }] };
+    writeFileSync(file, JSON.stringify({ mcpServers: {}, grants: good }));
+    expect(loadRawConfig(file).grants).toEqual(good);
+    for (const rule of [{ tool: "mongo__*", args: {} }, { tool: "", args: { db: "a" } }, { tool: "m", args: { db: 1 } }, { tool: "m" }]) {
+      writeFileSync(file, JSON.stringify({ mcpServers: {}, grants: { main: [rule] } }));
+      expect(() => loadRawConfig(file)).toThrow(/grants/);
+    }
+  });
+
+  test("a profile grant becomes a profile of its server", () => {
+    const file = join(dir, "profile-grants.json");
+    const grants = { main: { server: "mongo", vars: { uri: "$(pw get main)" } }, bp: { server: "mongo" }, ops: ["x__*"] };
+    writeFileSync(file, JSON.stringify({ mcpServers: { mongo: { command: "m" } }, grants }));
+    const config = loadConfig(file);
+    expect(config.profiles).toEqual({ mongo: { main: { uri: "$(pw get main)" }, bp: {} } });
+    expect(config.grants).toEqual({ ops: ["x__*"] });
+  });
+
+  test("skips a server still written with the removed `instances`", () => {
+    const file = join(dir, "instances.json");
+    writeFileSync(file, JSON.stringify({ mcpServers: { mongo: { command: "m", instances: { a: {} } }, ok: { command: "o" } } }));
+    expect(Object.keys(loadConfig(file).mcpServers)).toEqual(["ok"]);
+  });
+
+  test("rejects a profile grant with a bad name, server or vars", () => {
+    const file = join(dir, "bad-profile-grants.json");
+    for (const grants of [{ "a.b": { server: "m" } }, { a: { server: "" } }, { a: { server: "m", vars: { x: 1 } } }]) {
+      writeFileSync(file, JSON.stringify({ mcpServers: {}, grants }));
+      expect(() => loadRawConfig(file)).toThrow(/grant/);
+    }
   });
 });
 

@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { readFileSync } from "fs";
 import path from "path";
 import os from "os";
+import { PROFILE_RE } from "./profiles.js";
 import { log, stripJsonComments, VERSION } from "./utils.js";
 
 const MAX_CONFIG_BYTES = 1_048_576; // 1 MB
@@ -32,13 +33,19 @@ export const HEADER_TOOLS_INCLUDE = "x-tools-include";
 export const HEADER_TOOLS_EXCLUDE = "x-tools-exclude";
 export const HEADER_TOOLS_GRANTS = "x-tools-grants";
 
-export type StdioServer = {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
+/** Fields every server takes, whatever its transport. */
+type CommonFields = {
   enabled?: boolean;
   include?: string[];
   exclude?: string[];
+  /** Arguments fixed for every call: dropped from the tool schemas and filled in on each call. */
+  pinArgs?: Record<string, unknown>;
+};
+
+export type StdioServer = CommonFields & {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
 };
 
 /** OAuth client settings; omit `clientId` to use dynamic client registration. */
@@ -49,15 +56,12 @@ export type OAuthConfig = {
   callbackPort?: number;
 };
 
-type RemoteServerFields = {
+type RemoteServerFields = CommonFields & {
   url: string;
   headers?: Record<string, string>;
   /** `"oauth"` (or an `oauth` block) authorizes via `unimcp auth <name>`. */
   auth?: "oauth";
   oauth?: OAuthConfig;
-  enabled?: boolean;
-  include?: string[];
-  exclude?: string[];
 };
 
 /** `type` may be omitted: a `url` without one is HTTP. */
@@ -67,10 +71,24 @@ export type SseServer = RemoteServerFields & { type: "sse" };
 
 export type ServerConfig = StdioServer | HttpServer | SseServer;
 
+/**
+ * A glob hides matching tools from a client without the grant; `{ tool, args }` leaves them
+ * listed but refuses a call whose arguments equal every one of `args`.
+ */
+export type GrantRule = string | { tool: string; args: Record<string, string> };
+
+/** Values for a server's `{var}` placeholders, one set per profile. */
+export type ProfileVars = Record<string, string>;
+
+/** A grant that is also a profile of `server`: the grant's name is the profile's. */
+type ProfileGrant = { server: string; vars?: ProfileVars };
+
 export type Config = {
   mcpServers: Record<string, ServerConfig>;
-  /** Grant name → `server__tool` globs hidden from every client that doesn't hold that grant. */
-  grants?: Record<string, string[]>;
+  /** Grant name → rules locking `server__tool` names for every client that doesn't hold that grant. */
+  grants?: Record<string, GrantRule[]>;
+  /** Server → profile → vars, from the profile grants; such a server is listed once with a `profile` argument. */
+  profiles?: Record<string, Record<string, ProfileVars>>;
 };
 
 export type ResolveMcpFileOpts = {
@@ -102,23 +120,52 @@ export function resolveMcpFile(opts: ResolveMcpFileOpts): string {
 /** Parses the config as written, leaving `${VAR}` references intact. */
 export function loadRawConfig(filePath: string): Config {
   const parsed = JSON.parse(stripJsonComments(readRawConfig(filePath))) as Partial<Config>;
-  const grants = parseGrants(parsed?.grants, filePath);
+  const grants = parseGrants(parsed?.grants as unknown, filePath);
   const servers = parsed?.mcpServers;
-  if (servers === undefined) return { mcpServers: {}, grants };
+  if (servers === undefined) return { mcpServers: {}, ...grants };
   if (typeof servers !== "object" || servers === null || Array.isArray(servers)) {
     throw new Error(`Config "mcpServers" must be an object: ${filePath}`);
   }
-  return { mcpServers: servers, grants };
+  return { mcpServers: servers, ...grants };
 }
 
-function parseGrants(raw: unknown, filePath: string): Record<string, string[]> | undefined {
-  if (raw === undefined) return undefined;
-  // An empty list or pattern would lock nothing while looking like a lock.
-  const isGlobList = (v: unknown) => Array.isArray(v) && v.length > 0 && v.every((p) => typeof p === "string" && p.trim() !== "");
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw) || !Object.values(raw).every(isGlobList)) {
-    throw new Error(`Config "grants" must map grant names to non-empty arrays of tool globs: ${filePath}`);
+/** Splits `grants` into lock rules and profiles; the aggregator locks a profile's calls itself. */
+function parseGrants(raw: unknown, filePath: string): Pick<Config, "grants" | "profiles"> {
+  if (raw === undefined) return {};
+  const invalid = () => new Error(
+    `Config "grants" must map grant names to non-empty arrays of tool globs or { tool, args } rules, or to a { server, vars } profile: ${filePath}`);
+  if (!isPlainObject(raw)) throw invalid();
+  const grants: Record<string, GrantRule[]> = {};
+  const profiles: Record<string, Record<string, ProfileVars>> = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (isProfileGrant(value)) {
+      if (!PROFILE_RE.test(name)) throw new Error(`Config grant '${name}' is a profile, so its name must be letters, digits, '-' or single '_': ${filePath}`);
+      (profiles[value.server] ??= {})[name] = value.vars ?? {};
+    } else if (Array.isArray(value) && value.length > 0 && value.every(isGrantRule)) {
+      grants[name] = value;
+    } else {
+      throw invalid();
+    }
   }
-  return raw as Record<string, string[]>;
+  return { grants, profiles: Object.keys(profiles).length ? profiles : undefined };
+}
+
+function isProfileGrant(v: unknown): v is ProfileGrant {
+  if (!isPlainObject(v) || typeof v.server !== "string" || v.server.trim() === "") return false;
+  return v.vars === undefined || (isPlainObject(v.vars) && Object.values(v.vars).every((s) => typeof s === "string"));
+}
+
+// An empty list, pattern or args map would lock nothing while looking like a lock.
+function isGrantRule(rule: unknown): boolean {
+  const isGlob = (v: unknown) => typeof v === "string" && v.trim() !== "";
+  if (isGlob(rule)) return true;
+  if (!isPlainObject(rule) || !isGlob(rule.tool) || !isPlainObject(rule.args)) return false;
+  const values = Object.values(rule.args);
+  return values.length > 0 && values.every((v) => typeof v === "string");
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 /** Loads the config with `${VAR}` expanded, dropping servers whose references are unset. */
@@ -126,6 +173,11 @@ export function loadConfig(filePath: string): Config {
   const raw = loadRawConfig(filePath);
   const mcpServers: Record<string, ServerConfig> = {};
   for (const [rawName, rawSrv] of Object.entries(raw.mcpServers)) {
+    // Listed as a plain server it would show its tools to every client, its grants gating nothing.
+    if ("instances" in rawSrv) {
+      log(`[config] skipping '${rawName}' — "instances" was replaced by profile grants ({ "server", "vars" })`);
+      continue;
+    }
     const { resolved, missing } = resolveEnvRefs({ name: rawName, srv: rawSrv });
     if (missing.length > 0) {
       if (rawSrv.enabled !== false) log(`[config] skipping '${rawName}' — unset env var(s): ${missing.join(", ")}`);
@@ -133,7 +185,7 @@ export function loadConfig(filePath: string): Config {
     }
     mcpServers[resolved.name] = resolved.srv;
   }
-  return { mcpServers, grants: raw.grants };
+  return { mcpServers, grants: raw.grants, profiles: raw.profiles };
 }
 
 /** Names of `${VAR}` references in a server config that are unset or empty. */

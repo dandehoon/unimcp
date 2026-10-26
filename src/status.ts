@@ -123,6 +123,7 @@ function stateSymbol(state: UpstreamStatus["state"]): string {
     case "failed": return "x";
     case "reconnecting": return "~";
     case "disconnected": return "-";
+    case "idle": return ".";
   }
 }
 

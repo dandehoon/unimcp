@@ -42,6 +42,8 @@ function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Serv
     if (!aggregator.isCallable(name, clientFilter)) {
       throw new McpError(ErrorCode.InvalidParams, `Tool not available to this client: ${name}`);
     }
+    const grant = aggregator.lockingGrant({ name, args: args ?? {}, clientFilter });
+    if (grant) throw new McpError(ErrorCode.InvalidParams, `${name} with these arguments needs the '${grant}' grant`);
     try {
       return await aggregator.callTool(name, args ?? {});
     } catch (err) {
