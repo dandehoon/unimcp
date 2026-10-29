@@ -11,10 +11,13 @@ src/
   index.ts        # Commander CLI entry — routes to bridge, daemon, server, setup, collect, mcp/status/stop
   config.ts       # Config types, loader, ${VAR} expansion (skips servers with unset vars), env-hash, pidFilePath helper, header constants
   aggregator.ts   # Upstream client manager — connect, merge tools, route calls, in-flight reconnect
+  transport.ts    # Upstream transports (stdio / StreamableHTTP / SSE), transport and auth error checks, withTimeout
   server.ts      # Managed HTTP daemon — /health /status /mcp, sessions, idle shutdown, hot reload, port fallback
   daemon.ts       # Daemon spawn / supervisor — detached process, PID file, health-check loop
   bridge.ts       # Stdio ↔ HTTP bridge (default mode) — auto-reconnect, forwards UNIMCP_INCLUDE/EXCLUDE and held grants as headers
-  grants.ts       # Held grants (env + watched file), the globs they leave locked, the file watcher
+  grants.ts       # Held grants (env + watched file), the globs they leave locked, argument-rule locks, the file watcher
+  profiles.ts     # Profile groups — expand profile grants into members ({var} fill), selector/pinned-arg schema rewrites, call routing
+  substitute.ts   # `$(command)` substitution in env/headers/oauth.clientSecret, run as an upstream connects
   oauth.ts        # File-backed OAuthClientProvider (~/.config/unimcp/oauth/<name>.<urlHash>.json), AuthRequiredError
   auth.ts         # `auth <name>` command — browser OAuth flow with a localhost callback
   setup.ts        # `setup` command — register unimcp in client configs
@@ -27,7 +30,7 @@ src/
 bin/
   unimcp.js       # npm launcher: dynamic-imports dist/unimcp.js (the bundled output)
 tests/
-  *.test.ts       # Unit tests (bun test) — aggregator, config, grants, setup, utils
+  *.test.ts       # Unit tests (bun test) — aggregator, config, grants, profiles, setup, substitute, utils
 .github/
   workflows/
     ci.yml        # Type check + unit tests on push/PR to main
@@ -303,6 +306,10 @@ SEP              = "__"                                 (aggregator.ts)
 - Direct HTTP callers (not via bridge) can set `X-Tools-Include` / `X-Tools-Exclude` headers directly
 - Grants (`grants.ts`): the config's top-level `grants` maps a grant to `server__tool` globs. The bridge sends the grants it holds (`UNIMCP_GRANTS` + `UNIMCP_GRANTS_FILE`) as `X-Tools-Grants`; the aggregator hides the globs of every grant not held — matched against the *prefixed* name, unlike include/exclude — so a request without the header holds nothing, and `tools/call` rejects a hidden tool. The bridge watches the grants file, reconnects with the new header on change, and sends `tools/list_changed`
 - The daemon rejects `tools/call` for any tool its client filter hides (`aggregator.isCallable`, judged by name so a down server's tools still reach the reconnect)
+- A grant rule may be `{ tool, args }` instead of a glob: it hides nothing, and `tools/call` is refused (`aggregator.lockingGrant`, naming the grant) when an unheld grant's rule matches the prefixed name and every one of its `args` equals the call's. A call no rule matches is open
+- Profiles (`profiles.ts`): `parseGrants` turns a `{ server, vars, description? }` grant into `config.profiles[server][grant]` (`{ vars, description }`; descriptions go into the `profile` argument's description); `aggregator.lockingGrant` refuses a call naming a profile the client doesn't hold, matched on the server prefix (a glob would let a `/` in a tool name slip past). A client sees the group's tools only with a profile held, its enum listing just those. A server with profiles becomes one upstream entry per profile, named `<server>.<profile>` (also its OAuth store key), tagged with `group`, its `{var}`s filled from that profile (`command`/`args`/`env`/`url`/`headers`/`oauth`; a missing var skips the group). Members are never listed or callable by their own name; the group lists the first connected member's tools once with a required `profile` enum (a tool with its own `profile` argument is left out), and `callTool` routes by it and strips it. Members connect in order in `connect()` until one succeeds, so a failing profile can't empty the group; the rest stay `idle` and connect through the on-demand reconnect path on first call
+- `pinArgs` (any server): removed from the listed schemas and spread over the call's arguments last, so the client can't override them
+- `$(command)` (`substitute.ts`) runs in `connectClient`, on every connect and reconnect, and in `auth`; only in `env`, `headers` and `oauth.clientSecret` (never `command`/`args`: argv is visible in `ps`). Errors name the command and exit code, never its output
 - Grants are a guardrail, not a security boundary: the daemon trusts the claimed `X-Tools-Grants`. Grant globs are literal (`nonegate`, `nocomment`); empty lists/patterns are rejected at load
 - A loopback-bound daemon answers only requests whose `Host` is a loopback name (DNS rebinding guard); the host comes from `--host`/`UNIMCP_HOST` only, never the generic `HOST`
 - `collect --save` replaces `mcpServers` only, keeping the file's other keys (`grants`)

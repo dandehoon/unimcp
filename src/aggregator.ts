@@ -1,13 +1,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Minimatch } from "minimatch";
-import { type Config, type ServerConfig, type ToolFilter, isHttpServer, isSseServer, isOAuthServer } from "./config.js";
-import { lockedPatterns } from "./grants.js";
-import { AuthRequiredError, FileOAuthProvider } from "./oauth.js";
+import { type Config, type GrantRule, type Profile, type ServerConfig, type ToolFilter, isHttpServer } from "./config.js";
+import { GLOB_OPTS, lockedPatterns, lockingGrant } from "./grants.js";
+import { PROFILE_ARG, type ProfileGroup, expandProfiles, routeProfile, takesProfileArg, withProfileArg, withoutPinnedArgs } from "./profiles.js";
+import { AuthRequiredError } from "./oauth.js";
+import { substituteCommands } from "./substitute.js";
+import { buildSSETransport, buildTransport, isAuthError, isTransportError, withTimeout } from "./transport.js";
 import { log, VERSION } from "./utils.js";
 
 export const SEP = "__";
@@ -18,7 +17,8 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CAP_MS = 30_000;
 
-export type UpstreamState = "connected" | "failed" | "reconnecting" | "disconnected";
+/** `idle`: a profile member not yet used — it connects on its first call. */
+export type UpstreamState = "connected" | "failed" | "reconnecting" | "disconnected" | "idle";
 
 export type UpstreamStatus = {
   name: string;
@@ -40,6 +40,8 @@ type UpstreamEntry = {
   lastError: string | null;
   lastErrorAt: number | null;
   reconnectAttempts: number;
+  /** Set on a profile member: reached only through its server's `profile` argument, never by its own name. */
+  group?: string;
 };
 
 type AggregatedTool = Tool & { upstreamName: string; originalName: string };
@@ -47,14 +49,12 @@ type AggregatedTool = Tool & { upstreamName: string; originalName: string };
 const MATCH_ALL = [new Minimatch("*", { dot: true })];
 const MATCH_NONE: Minimatch[] = [];
 const patternCache = new Map<string, Minimatch[]>();
-// Patterns are literal globs: no `!` negation (which would invert a grant lock) and no `#` comments.
-const PATTERN_OPTS = { nonegate: true, nocomment: true, dot: true };
 
 function compilePatterns(patterns: string[]): Minimatch[] {
   const key = patterns.join("\0");
   let compiled = patternCache.get(key);
   if (!compiled) {
-    compiled = patterns.map((p) => new Minimatch(p, PATTERN_OPTS));
+    compiled = patterns.map((p) => new Minimatch(p, GLOB_OPTS));
     patternCache.set(key, compiled);
   }
   return compiled;
@@ -71,39 +71,55 @@ export class Aggregator {
   private upstreams: Map<string, UpstreamEntry> = new Map();
   private toolCache: AggregatedTool[] | null = null;
   private clientFilterCache = new Map<string, AggregatedTool[]>();
-  private grants: Record<string, string[]> = {};
+  private grants: Record<string, GrantRule[]> = {};
+  private groups = new Map<string, ProfileGroup>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private pendingReconnects = new Map<string, Promise<void>>();
 
   async connect(config: Config): Promise<void> {
     this.grants = config.grants ?? {};
-    const entries = Object.entries(config.mcpServers).filter(([_, srv]) => srv.enabled !== false);
-    await Promise.all(entries.map(([name, srv]) => this.connectOne(name, srv)));
+    const entries = Object.entries(config.mcpServers).filter(([name, srv]) => srv.enabled !== false && isValidName(name, config.profiles));
+    for (const server of Object.keys(config.profiles ?? {})) {
+      if (!config.mcpServers[server]) log(`[grants] profiles for unknown server '${server}' — ignored`);
+    }
+    await Promise.all(entries.map(([name, srv]) => {
+      const profiles = config.profiles?.[name];
+      return profiles ? this.connectGroup({ name, srv, profiles }) : this.connectOne(name, srv);
+    }));
   }
 
-  private async connectOne(name: string, srv: ServerConfig): Promise<void> {
-    if (name.includes(SEP)) {
-      log(`[${name}] server name must not contain "${SEP}" — skipped`);
+  /** The first member connects now, for the tool schemas every member shares; the rest on first call. */
+  private async connectGroup({ name, srv, profiles }: { name: string; srv: ServerConfig; profiles: Record<string, Profile> }): Promise<void> {
+    let expanded: ReturnType<typeof expandProfiles>;
+    try {
+      expanded = expandProfiles(name, srv, profiles);
+    } catch (err) {
+      log(`[${name}] invalid profiles — skipped: ${(err as Error).message}`);
       return;
     }
+    this.groups.set(name, expanded.group);
+    for (const m of expanded.members) this.upstreams.set(m.name, { ...blankEntry(m.name, m.srv, "idle"), group: name });
+    // Down the list until one connects: a failing profile must not leave the group with no tools to list.
+    for (const m of expanded.members) {
+      await this.connectOne(m.name, m.srv, name);
+      if (this.upstreams.get(m.name)?.state === "connected") return;
+    }
+  }
 
+  private async connectOne(name: string, srv: ServerConfig, group?: string): Promise<void> {
     try {
       const result = await this.connectClient(name, srv);
       const filtered = result.tools.filter((t) => matchesFilter(t.name, serverFilter(srv)));
       this.upstreams.set(name, {
         name, client: result.client, tools: filtered, config: srv,
         state: "connected", connectedAt: Date.now(),
-        lastError: null, lastErrorAt: null, reconnectAttempts: 0,
+        lastError: null, lastErrorAt: null, reconnectAttempts: 0, group,
       });
       this.setupErrorHandler(name, result.client);
       log(`[${name}] connected (${filtered.length} tools)`);
     } catch (err) {
       log(`[${name}] failed to connect:`, err);
-      this.upstreams.set(name, {
-        name, client: new Client({ name: CLIENT_NAME, version: VERSION }), tools: [], config: srv,
-        state: "failed", connectedAt: null,
-        lastError: String(err), lastErrorAt: Date.now(), reconnectAttempts: 0,
-      });
+      this.upstreams.set(name, { ...blankEntry(name, srv, "failed"), lastError: String(err), lastErrorAt: Date.now(), group });
       // Retrying can't help until the user authorizes; retryIfDown picks up their new tokens.
       if (!(err instanceof AuthRequiredError)) this.scheduleReconnect(name);
     }
@@ -166,14 +182,27 @@ export class Aggregator {
   }
 
   private buildToolCache(): AggregatedTool[] {
-    return [...this.upstreams.values()].flatMap(({ name, tools }) =>
-      tools.map((t) => ({
-        ...t,
-        name: `${name}${SEP}${t.name}`,
-        upstreamName: name,
-        originalName: t.name,
-      }))
-    );
+    const listed = (name: string, tools: Tool[]) => tools.map((t) => ({
+      ...t,
+      name: `${name}${SEP}${t.name}`,
+      upstreamName: name,
+      originalName: t.name,
+    }));
+    const plain = [...this.upstreams.values()].filter((e) => !e.group)
+      .flatMap((e) => listed(e.name, e.tools.map((t) => withoutPinnedArgs(t, e.config.pinArgs))));
+    const grouped = [...this.groups.values()].flatMap((g) =>
+      listed(g.name, this.groupTools(g).map((t) => withoutPinnedArgs(t, g.config.pinArgs))));
+    return [...plain, ...grouped];
+  }
+
+  /** A group's tools, from whichever member has connected: they all run the same server. */
+  private groupTools(group: ProfileGroup): Tool[] {
+    const tools = [...this.upstreams.values()].find((e) => e.group === group.name && e.tools.length)?.tools ?? [];
+    return tools.filter((t) => {
+      if (!takesProfileArg(t)) return true;
+      log(`[${group.name}] '${t.name}' takes its own 'profile' argument, which the selector would shadow — not listed`);
+      return false;
+    });
   }
 
   listTools(clientFilter?: ToolFilter): AggregatedTool[] {
@@ -182,35 +211,74 @@ export class Aggregator {
       this.clientFilterCache.clear();
     }
     // Grant locks are the daemon's to apply: a client that sends no grants holds none.
-    const locked = lockedPatterns(this.grants, new Set(clientFilter?.grants));
-    if (!clientFilter?.include && !clientFilter?.exclude && !locked.length) return this.toolCache;
-    const key = JSON.stringify([clientFilter?.include, clientFilter?.exclude, locked]);
+    const held = new Set(clientFilter?.grants);
+    const locked = lockedPatterns(this.grants, held);
+    const profiles = this.heldProfiles(held);
+    const key = JSON.stringify([clientFilter?.include, clientFilter?.exclude, locked, profiles]);
     let cached = this.clientFilterCache.get(key);
     if (!cached) {
-      cached = this.toolCache.filter((t) => isVisibleToClient({ tool: t, clientFilter, locked }));
+      cached = this.toolCache.filter((t) => isVisibleToClient({ tool: t, clientFilter, locked }))
+        .flatMap((t) => this.withHeldProfiles(t, profiles));
       this.clientFilterCache.set(key, cached);
     }
     return cached;
   }
 
+  /** Each group's profiles the client holds the grant for: the only ones it sees or may pick. */
+  private heldProfiles(held: Set<string>): Record<string, string[]> {
+    return Object.fromEntries([...this.groups.values()].map((g) => [g.name, g.profiles.filter((p) => held.has(p))]));
+  }
+
+  /** A group tool with its selector listing the held profiles, or nothing when none is held. */
+  private withHeldProfiles(tool: AggregatedTool, profiles: Record<string, string[]>): AggregatedTool[] {
+    const group = this.groups.get(tool.upstreamName);
+    if (!group) return [tool];
+    const held = profiles[group.name];
+    return held.length ? [withProfileArg(tool, { ...group, profiles: held }) as AggregatedTool] : [];
+  }
+
   /** Whether a client may call a tool, judged by name: a server that is down lists no tools, yet calling one must still reach callTool's reconnect. */
   isCallable(prefixedName: string, clientFilter?: ToolFilter): boolean {
     const sep = prefixedName.indexOf(SEP);
-    const entry = sep > 0 ? this.upstreams.get(prefixedName.slice(0, sep)) : undefined;
-    if (!entry) return false;
+    const config = sep > 0 ? this.listedConfig(prefixedName.slice(0, sep)) : undefined;
+    if (!config) return false;
     const tool = { name: prefixedName, originalName: prefixedName.slice(sep + SEP.length) };
-    const locked = lockedPatterns(this.grants, new Set(clientFilter?.grants));
-    return matchesFilter(tool.originalName, serverFilter(entry.config)) && isVisibleToClient({ tool, clientFilter, locked });
+    const held = new Set(clientFilter?.grants);
+    const group = this.groups.get(prefixedName.slice(0, sep));
+    if (group && !group.profiles.some((p) => held.has(p))) return false;
+    const locked = lockedPatterns(this.grants, held);
+    return matchesFilter(tool.originalName, serverFilter(config)) && isVisibleToClient({ tool, clientFilter, locked });
   }
 
-  async callTool(prefixedName: string, args: Record<string, unknown>): Promise<ReturnType<Client["callTool"]>> {
+  /** The grant this call needs and the client lacks, if any: the profile it names, or an argument rule's. */
+  lockingGrant(call: { name: string; args: Record<string, unknown>; clientFilter?: ToolFilter }): string | undefined {
+    const held = new Set(call.clientFilter?.grants);
+    const server = call.name.slice(0, call.name.indexOf(SEP));
+    // Judged on the server prefix alone, never a glob over the tool name, so no tool name slips past it.
+    const group = this.groups.get(server);
+    const profile = call.args[PROFILE_ARG];
+    if (group && typeof profile === "string" && group.profiles.includes(profile) && !held.has(profile)) return profile;
+    // Judged on the arguments the upstream receives: a pinned value can't dodge a rule by being left out.
+    const args = { ...call.args, ...this.listedConfig(server)?.pinArgs };
+    return lockingGrant(this.grants, held, { name: call.name, args });
+  }
+
+  /** Config of a server as clients see it: a group or a plain server, never a group's member. */
+  private listedConfig(name: string): ServerConfig | undefined {
+    const entry = this.upstreams.get(name);
+    return this.groups.get(name)?.config ?? (entry && !entry.group ? entry.config : undefined);
+  }
+
+  async callTool(prefixedName: string, rawArgs: Record<string, unknown>): Promise<ReturnType<Client["callTool"]>> {
     const sep = prefixedName.indexOf(SEP);
     if (sep === -1) throw new Error(`Invalid tool name (missing separator): ${prefixedName}`);
-    const upstreamName = prefixedName.slice(0, sep);
+    const listedName = prefixedName.slice(0, sep);
     const toolName = prefixedName.slice(sep + SEP.length);
+    const group = this.groups.get(listedName);
+    const { member: upstreamName, args } = group ? routeProfile(group, rawArgs) : { member: listedName, args: rawArgs };
 
     const upstream = this.upstreams.get(upstreamName);
-    if (!upstream) throw new Error(`Unknown upstream: ${upstreamName}`);
+    if (!upstream || (upstream.group && !group)) throw new Error(`Unknown upstream: ${upstreamName}`);
     if (upstream.state !== "connected") {
       await this.onDemandReconnect(upstreamName, upstream);
       if ((upstream as UpstreamEntry).state !== "connected") {
@@ -220,7 +288,8 @@ export class Aggregator {
 
     try {
       return await withTimeout(
-        upstream.client.callTool({ name: toolName, arguments: args }),
+        // Pinned last: the client can't override what the config fixes.
+        upstream.client.callTool({ name: toolName, arguments: { ...args, ...upstream.config.pinArgs } }),
         CALL_TIMEOUT_MS,
         `[${upstreamName}] callTool timed out`,
       );
@@ -291,7 +360,8 @@ export class Aggregator {
     }
   }
 
-  private async connectClient(name: string, srv: ServerConfig): Promise<{ client: Client; tools: Tool[] }> {
+  private async connectClient(name: string, rawSrv: ServerConfig): Promise<{ client: Client; tools: Tool[] }> {
+    const srv = await substituteCommands(rawSrv);
     const client = new Client({ name: CLIENT_NAME, version: VERSION });
     const transport = buildTransport(name, srv);
     try {
@@ -337,6 +407,22 @@ export class Aggregator {
 
 // --- helpers ---
 
+function isValidName(name: string, profiles: Config["profiles"]): boolean {
+  // `.` joins a server and its profile in member names: `a.b` would collide with profile `b` of `a`.
+  const shadowed = Object.keys(profiles ?? {}).find((server) => name.startsWith(`${server}.`));
+  if (!name.includes(SEP) && !shadowed) return true;
+  log(`[${name}] server name must not contain "${SEP}" or start with "${shadowed}." (a server with profiles) — skipped`);
+  return false;
+}
+
+/** An entry with no live client: one that failed to connect, or a profile member not used yet. */
+function blankEntry(name: string, config: ServerConfig, state: "failed" | "idle"): UpstreamEntry {
+  return {
+    name, client: new Client({ name: CLIENT_NAME, version: VERSION }), tools: [], config,
+    state, connectedAt: null, lastError: null, lastErrorAt: null, reconnectAttempts: 0,
+  };
+}
+
 type VisibilityCheck = { tool: { name: string; originalName: string }; clientFilter?: ToolFilter; locked: string[] };
 
 function isVisibleToClient({ tool, clientFilter, locked }: VisibilityCheck): boolean {
@@ -346,66 +432,4 @@ function isVisibleToClient({ tool, clientFilter, locked }: VisibilityCheck): boo
 function serverFilter(srv: ServerConfig): ToolFilter | undefined {
   if (!srv.include && !srv.exclude) return undefined;
   return { include: srv.include, exclude: srv.exclude };
-}
-
-function buildTransport(name: string, srv: ServerConfig): Transport {
-  if (isSseServer(srv)) {
-    return buildSSETransport(name, srv);
-  }
-  if (isHttpServer(srv)) {
-    return new StreamableHTTPClientTransport(new URL(srv.url), {
-      requestInit: { headers: srv.headers },
-      authProvider: isOAuthServer(srv) ? new FileOAuthProvider({ name, srv }) : undefined,
-    });
-  }
-  return new StdioClientTransport({
-    command: srv.command,
-    args: srv.args ?? [],
-    env: { ...process.env, ...srv.env } as Record<string, string>,
-  });
-}
-
-function buildSSETransport(name: string, srv: ServerConfig): SSEClientTransport {
-  const headers = "headers" in srv ? srv.headers : undefined;
-  const url = new URL((srv as { url: string }).url);
-  return new SSEClientTransport(url, {
-    eventSourceInit: headers ? { fetch: (input, init) => fetch(input, { ...init, headers: withHeaders(init?.headers, headers) }) } : undefined,
-    requestInit: headers ? { headers } : undefined,
-    authProvider: isOAuthServer(srv) ? new FileOAuthProvider({ name, srv }) : undefined,
-  });
-}
-
-/** The SDK passes a `Headers` instance, which object spread would empty — dropping its bearer token. */
-function withHeaders(base: HeadersInit | undefined, extra: Record<string, string>): Headers {
-  const merged = new Headers(base);
-  for (const [k, v] of Object.entries(extra)) merged.set(k, v);
-  return merged;
-}
-
-function isAuthError(err: unknown): boolean {
-  if (err instanceof AuthRequiredError) return true;
-  const msg = String(err).toLowerCase();
-  return msg.includes("unauthorized") || msg.includes("forbidden") ||
-    msg.includes("401") || msg.includes("403");
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer!: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-
-function isTransportError(err: unknown): boolean {
-  const msg = String(err).toLowerCase();
-  return msg.includes("econnrefused") || msg.includes("econnreset") ||
-    msg.includes("epipe") || msg.includes("timed out") || msg.includes("fetch failed") ||
-    msg.includes("unable to connect") || msg.includes("socket hang up") || msg.includes("network error") ||
-    msg.includes("session not found") || msg.includes("no valid session") ||
-    msg.includes("session-id header is required") || msg.includes("server not initialized") ||
-    msg.includes("streamable http error") || msg.includes("posting to endpoint") ||
-    msg.includes("http error") || msg.includes("unauthorized") || msg.includes("forbidden") ||
-    msg.includes("401") || msg.includes("403") || msg.includes("500") ||
-    msg.includes("502") || msg.includes("503") || msg.includes("504");
 }

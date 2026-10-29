@@ -53,11 +53,27 @@ flowchart LR
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" },
-      "include": ["search_*", "get_*"],   // per-server filter (also: exclude)
+      "include": ["search_*", "get_*"]   // per-server filter (also: exclude)
     },
-    "experimental": { "command": "npx", "args": ["-y", "experimental-mcp"], "enabled": false },
-  },
+    "experimental": { "command": "npx", "args": ["-y", "experimental-mcp"], "enabled": false }
+  }
 }
+```
+
+### Command substitution
+
+`$(command)` in `env`, `headers` or `oauth.clientSecret` is replaced with the command's trimmed output (run with `sh -c`) when that server connects, so a secret is read only when its server is used, and a rotated one is picked up on reconnect. It is never applied to `command` or `args`, where the value would be visible in `ps`.
+
+```json
+{ "headers": { "Authorization": "Bearer $(security find-generic-password -s my-token -w)" } }
+```
+
+### Pinned arguments
+
+`pinArgs` fixes arguments on every call to a server: they are dropped from its tool schemas, and a client can't override them.
+
+```json
+{ "pinArgs": { "connectionId": "preconfigured" } }
 ```
 
 ### Environment variables
@@ -96,6 +112,32 @@ A top-level `grants` map hides the matching tools (globs on `serverName__toolNam
 
 A client holds the grants in `UNIMCP_GRANTS` and `UNIMCP_GRANTS_FILE`. Locked tools are hidden and can't be called by name. When the grants file changes, the bridge updates the client's tool list without a restart.
 
+A rule can also lock calls by argument: `{ "tool": "<glob>", "args": { … } }` leaves the tool listed but refuses a call whose arguments equal every value in `args`. A call no rule matches is open — including one that leaves the argument out, or names the same target another way — so to keep credentials apart, use profiles.
+
+#### Profiles
+
+A grant written as `{ "server", "vars" }` is a profile of that server: one copy of it (one per database, account, or workspace), granted on its own. The server's `{var}` placeholders in `command`, `args`, `env`, `url`, `headers` and `oauth` are filled from the profile's `vars`:
+
+```jsonc
+{
+  "mcpServers": {
+    "mongo": {
+      "command": "npx",
+      "args": ["-y", "mongodb-mcp-server", "--readOnly"],
+      "env": { "MDB_MCP_CONNECTION_STRING": "{uri}" },
+      "exclude": ["connect", "disconnect", "list-connections"],
+      "pinArgs": { "connectionId": "preconfigured" }
+    }
+  },
+  "grants": {
+    "prod": { "server": "mongo", "vars": { "uri": "$(pass show mongo/prod)" }, "description": "orders and users, production" },
+    "staging": { "server": "mongo", "vars": { "uri": "$(pass show mongo/staging)" } }
+  }
+}
+```
+
+Clients see `mongo__find` once, with a required `profile` argument listing the profiles they hold, each `description` included in the argument's own, so an agent knows what it picks; a client holding none sees no `mongo` tools, and a call naming a profile needs that grant. A server with no profile grants is listed as itself. At startup, profiles connect in order until one succeeds, to supply the tool schemas; the others connect on their first call. Authorize an OAuth profile with `unimcp auth <server>.<profile>`.
+
 Grants are a guardrail, not a security boundary: any local process can claim any grant. Leave tools that must never be reachable out of the config.
 
 ### OAuth servers
@@ -110,9 +152,9 @@ Add `"auth": "oauth"` to a remote server, then run `unimcp auth <name>` once to 
     // no dynamic registration: use a pre-registered client
     "slack": {
       "url": "https://mcp.slack.com/mcp",
-      "oauth": { "clientId": "<id>", "clientSecret": "${SLACK_CLIENT_SECRET}", "scopes": ["chat:write"], "callbackPort": 3118 },
-    },
-  },
+      "oauth": { "clientId": "<id>", "clientSecret": "${SLACK_CLIENT_SECRET}", "scopes": ["chat:write"], "callbackPort": 3118 }
+    }
+  }
 }
 ```
 
