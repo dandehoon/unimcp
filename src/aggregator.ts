@@ -78,7 +78,7 @@ export class Aggregator {
 
   async connect(config: Config): Promise<void> {
     this.grants = config.grants ?? {};
-    const entries = Object.entries(config.mcpServers).filter(([name, srv]) => srv.enabled !== false && isValidName(name));
+    const entries = Object.entries(config.mcpServers).filter(([name, srv]) => srv.enabled !== false && isValidName(name, config.profiles));
     for (const server of Object.keys(config.profiles ?? {})) {
       if (!config.mcpServers[server]) log(`[grants] profiles for unknown server '${server}' — ignored`);
     }
@@ -253,11 +253,14 @@ export class Aggregator {
   /** The grant this call needs and the client lacks, if any: the profile it names, or an argument rule's. */
   lockingGrant(call: { name: string; args: Record<string, unknown>; clientFilter?: ToolFilter }): string | undefined {
     const held = new Set(call.clientFilter?.grants);
+    const server = call.name.slice(0, call.name.indexOf(SEP));
     // Judged on the server prefix alone, never a glob over the tool name, so no tool name slips past it.
-    const group = this.groups.get(call.name.slice(0, call.name.indexOf(SEP)));
+    const group = this.groups.get(server);
     const profile = call.args[PROFILE_ARG];
     if (group && typeof profile === "string" && group.profiles.includes(profile) && !held.has(profile)) return profile;
-    return lockingGrant(this.grants, held, call);
+    // Judged on the arguments the upstream receives: a pinned value can't dodge a rule by being left out.
+    const args = { ...call.args, ...this.listedConfig(server)?.pinArgs };
+    return lockingGrant(this.grants, held, { name: call.name, args });
   }
 
   /** Config of a server as clients see it: a group or a plain server, never a group's member. */
@@ -404,10 +407,11 @@ export class Aggregator {
 
 // --- helpers ---
 
-function isValidName(name: string): boolean {
+function isValidName(name: string, profiles: Config["profiles"]): boolean {
   // `.` joins a server and its profile in member names: `a.b` would collide with profile `b` of `a`.
-  if (!name.includes(SEP) && !name.includes(".")) return true;
-  log(`[${name}] server name must not contain "${SEP}" or "." — skipped`);
+  const shadowed = Object.keys(profiles ?? {}).find((server) => name.startsWith(`${server}.`));
+  if (!name.includes(SEP) && !shadowed) return true;
+  log(`[${name}] server name must not contain "${SEP}" or start with "${shadowed}." (a server with profiles) — skipped`);
   return false;
 }
 

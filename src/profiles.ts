@@ -19,9 +19,9 @@ export type ProfileGroup = {
   config: ServerConfig;
 };
 
-export type Member = { name: string; srv: ServerConfig };
+type Member = { name: string; srv: ServerConfig };
 
-export const memberName = (server: string, profile: string): string => `${server}.${profile}`;
+const memberName =(server: string, profile: string): string => `${server}.${profile}`;
 
 /** One member per profile: the server's config with each `{var}` filled from that profile; throws on an invalid group. */
 export function expandProfiles(name: string, srv: ServerConfig, profiles: Record<string, Profile>): { group: ProfileGroup; members: Member[] } {

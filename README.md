@@ -53,10 +53,10 @@ flowchart LR
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" },
-      "include": ["search_*", "get_*"],   // per-server filter (also: exclude)
+      "include": ["search_*", "get_*"]   // per-server filter (also: exclude)
     },
-    "experimental": { "command": "npx", "args": ["-y", "experimental-mcp"], "enabled": false },
-  },
+    "experimental": { "command": "npx", "args": ["-y", "experimental-mcp"], "enabled": false }
+  }
 }
 ```
 
@@ -126,13 +126,13 @@ A grant written as `{ "server", "vars" }` is a profile of that server: one copy 
       "args": ["-y", "mongodb-mcp-server", "--readOnly"],
       "env": { "MDB_MCP_CONNECTION_STRING": "{uri}" },
       "exclude": ["connect", "disconnect", "list-connections"],
-      "pinArgs": { "connectionId": "preconfigured" },
-    },
+      "pinArgs": { "connectionId": "preconfigured" }
+    }
   },
   "grants": {
     "prod": { "server": "mongo", "vars": { "uri": "$(pass show mongo/prod)" }, "description": "orders and users, production" },
-    "staging": { "server": "mongo", "vars": { "uri": "$(pass show mongo/staging)" } },
-  },
+    "staging": { "server": "mongo", "vars": { "uri": "$(pass show mongo/staging)" } }
+  }
 }
 ```
 
@@ -152,9 +152,9 @@ Add `"auth": "oauth"` to a remote server, then run `unimcp auth <name>` once to 
     // no dynamic registration: use a pre-registered client
     "slack": {
       "url": "https://mcp.slack.com/mcp",
-      "oauth": { "clientId": "<id>", "clientSecret": "${SLACK_CLIENT_SECRET}", "scopes": ["chat:write"], "callbackPort": 3118 },
-    },
-  },
+      "oauth": { "clientId": "<id>", "clientSecret": "${SLACK_CLIENT_SECRET}", "scopes": ["chat:write"], "callbackPort": 3118 }
+    }
+  }
 }
 ```
 

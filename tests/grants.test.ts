@@ -99,10 +99,13 @@ describe("config grants", () => {
     expect(config.grants).toEqual({ ops: ["x__*"] });
   });
 
-  test("skips a server still written with the removed `instances`", () => {
-    const file = join(dir, "instances.json");
-    writeFileSync(file, JSON.stringify({ mcpServers: { mongo: { command: "m", instances: { a: {} } }, ok: { command: "o" } } }));
-    expect(Object.keys(loadConfig(file).mcpServers)).toEqual(["ok"]);
+  test("expands ${VAR} in profile vars, dropping a profile whose var is unset", () => {
+    const file = join(dir, "profile-env.json");
+    process.env.UNIMCP_TEST_PROFILE_URI = "mongodb://a";
+    const grants = { a: { server: "mongo", vars: { uri: "${UNIMCP_TEST_PROFILE_URI}" } }, b: { server: "mongo", vars: { uri: "${UNIMCP_TEST_UNSET}" } } };
+    writeFileSync(file, JSON.stringify({ mcpServers: { mongo: { command: "m" } }, grants }));
+    expect(loadConfig(file).profiles).toEqual({ mongo: { a: { vars: { uri: "mongodb://a" } } } });
+    delete process.env.UNIMCP_TEST_PROFILE_URI;
   });
 
   test("rejects a profile grant with a bad name, server or vars", () => {
@@ -156,5 +159,14 @@ describe("Aggregator grant locks", () => {
     expect(agg.isCallable("proddb__find", { grants: ["proddb"] })).toBe(true);
     expect(agg.isCallable("portal__get_x", { exclude: ["get_*"] })).toBe(false);
     expect(agg.isCallable("nowhere__x")).toBe(false);
+  });
+
+  test("an argument rule matches a pinned value the client left out", async () => {
+    const agg = new Aggregator();
+    await agg.connect({ mcpServers: {}, grants: { prod: [{ tool: "mongo__*", args: { db: "prod" } }] } });
+    const upstreams = (agg as unknown as { upstreams: Map<string, unknown> }).upstreams;
+    upstreams.set("mongo", { name: "mongo", tools: [], config: { command: "x", pinArgs: { db: "prod" } }, state: "connected" });
+    expect(agg.lockingGrant({ name: "mongo__find", args: {} })).toBe("prod");
+    expect(agg.lockingGrant({ name: "mongo__find", args: {}, clientFilter: { grants: ["prod"] } })).toBeUndefined();
   });
 });

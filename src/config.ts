@@ -177,11 +177,6 @@ export function loadConfig(filePath: string): Config {
   const raw = loadRawConfig(filePath);
   const mcpServers: Record<string, ServerConfig> = {};
   for (const [rawName, rawSrv] of Object.entries(raw.mcpServers)) {
-    // Listed as a plain server it would show its tools to every client, its grants gating nothing.
-    if ("instances" in rawSrv) {
-      log(`[config] skipping '${rawName}' — "instances" was replaced by profile grants ({ "server", "vars" })`);
-      continue;
-    }
     const { resolved, missing } = resolveEnvRefs({ name: rawName, srv: rawSrv });
     if (missing.length > 0) {
       if (rawSrv.enabled !== false) log(`[config] skipping '${rawName}' — unset env var(s): ${missing.join(", ")}`);
@@ -189,7 +184,7 @@ export function loadConfig(filePath: string): Config {
     }
     mcpServers[resolved.name] = resolved.srv;
   }
-  return { mcpServers, grants: raw.grants, profiles: raw.profiles };
+  return { mcpServers, grants: raw.grants, profiles: resolveProfiles(raw.profiles) };
 }
 
 /** Names of `${VAR}` references in a server config that are unset or empty. */
@@ -217,6 +212,19 @@ export function computeEnvHash(filePath: string): string {
 }
 
 // --- helpers ---
+
+/** Profiles with `${VAR}` expanded in their vars; a profile referencing an unset var is dropped. */
+function resolveProfiles(profiles: Config["profiles"]): Config["profiles"] {
+  if (!profiles) return profiles;
+  return Object.fromEntries(Object.entries(profiles).map(([server, byName]) => [server, Object.fromEntries(
+    Object.entries(byName).flatMap(([name, profile]) => {
+      const { resolved, missing } = resolveEnvRefs(profile.vars);
+      if (missing.length === 0) return [[name, { ...profile, vars: resolved }]];
+      log(`[config] skipping profile '${name}' of '${server}' — unset env var(s): ${missing.join(", ")}`);
+      return [];
+    }),
+  )]));
+}
 
 function resolveEnvRefs<T>(value: T): { resolved: T; missing: string[] } {
   const missing = new Set<string>();

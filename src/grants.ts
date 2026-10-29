@@ -26,7 +26,7 @@ export function lockedPatterns(grants: Record<string, GrantRule[]> | undefined, 
     held.has(name) ? [] : rules.filter((r): r is string => typeof r === "string"));
 }
 
-export type GrantedCall = { name: string; args: Record<string, unknown> };
+type GrantedCall ={ name: string; args: Record<string, unknown> };
 
 /** The first grant not held whose argument rule matches this call, or undefined when none locks it. */
 export function lockingGrant(grants: Record<string, GrantRule[]> | undefined, held: Set<string>, call: GrantedCall): string | undefined {
