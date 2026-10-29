@@ -4,10 +4,12 @@ A local MCP aggregator. One config, one daemon, per-client tool control.
 
 - **One config**: define every MCP server once in `unimcp.json`. Each client (Claude Code, Cursor, VS Code, OpenCode, …) connects through unimcp.
 - **Auto daemon**: one shared background process owns all upstream connections. It starts on first use, exits after 30s idle, and hot-reloads on config change, so no orphaned Docker containers or stdio processes are left behind.
-- **Client-side tool control**: each client picks the tools it sees with `UNIMCP_INCLUDE`/`UNIMCP_EXCLUDE`, with no server-side profiles.
+- **Client-side tool control**: each client picks the tools it sees with `UNIMCP_INCLUDE`/`UNIMCP_EXCLUDE`, and unlocks gated tools and server profiles with grants.
 - **Per-secret isolation**: different `${VAR}` values (e.g. two `GITHUB_TOKEN`s) get separate daemons.
 
 ## Quick start
+
+Requires Node `^22.23.4`, `^24.22.1` or `>=26.12.1`.
 
 ```bash
 npm install -g @dandehoon/unimcp     # or: npx @dandehoon/unimcp
@@ -41,7 +43,7 @@ flowchart LR
 
 ## Configuration
 
-`unimcp.json` uses the standard `mcpServers` schema, so an existing Claude Code, Cursor, or Copilot config works as-is. Resolution order: `./unimcp.json` > `--mcp-file` / `UNIMCP_CONFIG` > `~/.config/unimcp/unimcp.json`.
+`unimcp.json` uses the standard `mcpServers` schema, so an existing Claude Code, Cursor, or Copilot config works as-is. Resolution order: `--mcp-file` > `UNIMCP_CONFIG` > `./unimcp.json` > `~/.config/unimcp/unimcp.json`.
 
 `${VAR}` is expanded from the shell environment; a server referencing an unset variable is skipped.
 
@@ -112,7 +114,7 @@ A top-level `grants` map hides the matching tools (globs on `serverName__toolNam
 
 A client holds the grants in `UNIMCP_GRANTS` and `UNIMCP_GRANTS_FILE`. Locked tools are hidden and can't be called by name. When the grants file changes, the bridge updates the client's tool list without a restart.
 
-A rule can also lock calls by argument: `{ "tool": "<glob>", "args": { … } }` leaves the tool listed but refuses a call whose arguments equal every value in `args`. A call no rule matches is open — including one that leaves the argument out, or names the same target another way — so to keep credentials apart, use profiles.
+A rule can also lock calls by argument: `{ "tool": "<glob>", "args": { … } }` leaves the tool listed but refuses a call whose arguments equal every value in `args` (a server's `pinArgs` count as passed). A call no rule matches is open — including one that leaves the argument out, or names the same target another way — so to keep credentials apart, use profiles.
 
 #### Profiles
 
@@ -136,7 +138,7 @@ A grant written as `{ "server", "vars" }` is a profile of that server: one copy 
 }
 ```
 
-Clients see `mongo__find` once, with a required `profile` argument listing the profiles they hold, each `description` included in the argument's own, so an agent knows what it picks; a client holding none sees no `mongo` tools, and a call naming a profile needs that grant. A server with no profile grants is listed as itself. At startup, profiles connect in order until one succeeds, to supply the tool schemas; the others connect on their first call. Authorize an OAuth profile with `unimcp auth <server>.<profile>`.
+Clients see `mongo__find` once, with a required `profile` argument listing the profiles they hold, each `description` included in the argument's own, so an agent knows what it picks; a client holding none sees no `mongo` tools, and a call naming a profile needs that grant. A server with no profile grants is listed as itself. `${VAR}` in `vars` is expanded like the rest of the config; a profile referencing an unset variable is skipped. At startup, profiles connect in order until one succeeds, to supply the tool schemas; the others connect on their first call. Authorize an OAuth profile with `unimcp auth <server>.<profile>`.
 
 Grants are a guardrail, not a security boundary: any local process can claim any grant. Leave tools that must never be reachable out of the config.
 

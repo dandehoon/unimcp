@@ -8,11 +8,11 @@ Coding agent reference for the **unimcp** repository: a TypeScript MCP aggregato
 
 ```
 src/
-  index.ts        # Commander CLI entry — routes to bridge, daemon, server, setup, collect, mcp/status/stop
-  config.ts       # Config types, loader, ${VAR} expansion (skips servers with unset vars), env-hash, pidFilePath helper, header constants
+  index.ts        # Commander CLI entry — routes to bridge, daemon, server, setup, collect, auth, mcp/status/stop
+  config.ts       # Config types, JSONC loader, grants/profiles parsing, ${VAR} expansion (skips servers and profiles with unset vars), env-hash, pidFilePath, CONFIG_DIR, header constants
   aggregator.ts   # Upstream client manager — connect, merge tools, route calls, in-flight reconnect
   transport.ts    # Upstream transports (stdio / StreamableHTTP / SSE), transport and auth error checks, withTimeout
-  server.ts      # Managed HTTP daemon — /health /status /mcp, sessions, idle shutdown, hot reload, port fallback
+  server.ts       # Managed HTTP daemon — /health /status /mcp, sessions, idle shutdown, hot reload, port fallback
   daemon.ts       # Daemon spawn / supervisor — detached process, PID file, health-check loop
   bridge.ts       # Stdio ↔ HTTP bridge (default mode) — auto-reconnect, forwards UNIMCP_INCLUDE/EXCLUDE and held grants as headers
   grants.ts       # Held grants (env + watched file), the globs they leave locked, argument-rule locks, the file watcher
@@ -30,7 +30,7 @@ src/
 bin/
   unimcp.js       # npm launcher: dynamic-imports dist/unimcp.js (the bundled output)
 tests/
-  *.test.ts       # Unit tests (bun test) — aggregator, config, grants, profiles, setup, substitute, utils
+  *.test.ts       # Unit tests (bun test) — aggregator, config, grants, oauth, profiles, setup, substitute, utils
 .github/
   workflows/
     ci.yml        # Type check + unit tests on push/PR to main
@@ -94,7 +94,7 @@ flowchart TB
 # Development (no compile step — bun runs TS natively)
 pnpm dev            # stdio mode: ensure daemon + bridge
 pnpm http           # HTTP mode: managed server on :4848
-pnpm daemon         # alias for --http (explicit daemon invocation)
+pnpm daemon         # --daemon, an alias for --http
 pnpm collect        # print merged config from all editors to stdout
 pnpm register       # register unimcp in Claude Code, Copilot, OpenCode, Cursor
 
@@ -102,16 +102,13 @@ pnpm register       # register unimcp in Claude Code, Copilot, OpenCode, Cursor
 pnpm typecheck      # tsc --noEmit — must pass before any commit
 pnpm test           # bun test tests/ — run unit tests
 
-# Build & install compiled binary
+# Build & install
+pnpm bundle         # bun build --target=node → dist/unimcp.js (what the npm package runs)
 pnpm build          # bun build --compile --minify → dist/unimcp
 pnpm install-bin    # build + cp dist/unimcp /usr/local/bin/unimcp
 ```
 
-There are no automated integration tests. The canonical verification steps are:
-
-1. `pnpm typecheck` — zero errors required
-2. `pnpm test` — all tests must pass
-3. Manual smoke test: `printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | timeout 20 pnpm dev 2>/dev/null`
+No integration tests. Before committing: `pnpm typecheck` (zero errors) and `pnpm test` (all pass); smoke test: `printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | timeout 20 pnpm dev 2>/dev/null`
 
 ---
 
@@ -188,13 +185,8 @@ Use `import type` for type-only imports.
 
 - `camelCase` for variables, functions, parameters
 - `PascalCase` for types and classes
-- `SCREAMING_SNAKE_CASE` for module-level constants: `const IDLE_TIMEOUT_MS = 30_000`
-- Prefix unused destructure bindings with `_`
+- `SCREAMING_SNAKE_CASE` for module-level constants, with `_` separators in numbers: `const IDLE_TIMEOUT_MS = 30_000`
 - Boolean variables: `is*`, `has*`, `use*` prefixes
-
-### Numeric literals
-
-- Use `_` separators for readability: `30_000`, `3_000`
 
 ### Async/await
 
@@ -206,27 +198,16 @@ Use `import type` for type-only imports.
 
 ## Error handling
 
-- On error: **either return it or log it — never both, never omit**
-- If the error breaks the flow → throw/return
-- If the flow continues despite the error → `console.error(...)` and continue
-- Upstream connection failures are non-fatal (logged, server skipped):
-  ```ts
-  } catch (err) {
-    console.error(`[${name}] failed to connect:`, err);
-  }
-  ```
-- MCP protocol errors are wrapped in `McpError`:
-  ```ts
-  throw new McpError(ErrorCode.InternalError, String(err));
-  ```
+- On error: **either return it or log it — never both, never omit**. Breaks the flow → throw; flow continues → log and continue
+- Upstream connection failures are non-fatal: logged, server skipped
+- MCP protocol errors are wrapped in `McpError(ErrorCode.InternalError, String(err))`
 
 ---
 
 ## Logging
 
-- **All logs go to `stderr`** (`console.error`) — stdout is reserved for MCP JSON-RPC messages
-- Log prefix convention: `[moduleName]` e.g. `[server]`, `[daemon]`, `[bridge]`, `[context7]`
-- Never use `console.log`
+- **All logs go to `stderr`** via `log()` (`utils.ts`) — stdout is reserved for MCP JSON-RPC. Never `console.log`
+- Prefix with `[moduleName]` or `[serverName]`: `[server]`, `[bridge]`, `[context7]`
 
 ---
 
@@ -244,48 +225,34 @@ await server.connect(transport);
 await transport.handleRequest(req, res);
 ```
 
-### Client (upstream)
-
-```ts
-const client = new Client({ name, version });
-await client.connect(
-  new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }),
-);
-// or
-await client.connect(new StdioClientTransport({ command, args, env }));
-```
+Upstream clients are built in `transport.ts` (`buildTransport`, `buildSSETransport`).
 
 ### Tool naming
 
-- Aggregated tools use `serverName__toolName` (double-underscore separator)
-- The separator constant is `SEP = "__"` in `aggregator.ts`
-- Parse with `indexOf(SEP)` + `slice`, not `split`, to handle tool names that also contain `__`
+- Aggregated tools are `serverName__toolName` (`SEP`); parse with `indexOf(SEP)` + `slice`, not `split` — tool names may contain `__`
 
 ---
 
 ## Key architectural rules
 
 - `unimcp.json` is **gitignored** — never commit it; it is user-local
-- `.env` is **gitignored** — no longer auto-loaded; secrets must be set in the shell environment before launching unimcp. `${VAR}` in `unimcp.json` is expanded from `process.env` at load time; a server referencing an unset or empty var is **skipped entirely** (no fallback, no partial config) — see `loadConfig()` vs `loadRawConfig()` in `config.ts`.
-- Config resolution order: `./unimcp.json` (local cwd) > `--mcp-file` flag / `UNIMCP_CONFIG` env > `~/.config/unimcp/unimcp.json` (global default). The `DEFAULT_MCP_FILE` exported from `config.ts` points to the global path; local resolution is in `resolveMcpFile()` in `index.ts`.
-- Daemon pid files live at **`~/.config/unimcp/daemon.<envHash>.pid`** (not in cwd)
-  - `envHash` is an 8-char lowercase hex SHA-256 over `JSON.stringify({ __config: <abs path of unimcp.json>, __version: <package version>, ...sorted ${VAR} → process.env[VAR] map })` — see `computeEnvHash()` in `config.ts`
-  - **All inputs matter**: a different config file path, unimcp version, *or* resolved value for any referenced env var produces a distinct hash → distinct daemon (an upgraded bridge never reuses an old daemon)
-  - Variables referenced but unset resolve to `""` for hashing (they still contribute to the hash, even though the owning server is skipped at load); unreferenced env vars are ignored
-  - Format: `"<pid>:<port>"` e.g. `"94663:4848"` or `"94844:52341"` (after port fallback)
-  - `pidFilePath(envHash)` in `config.ts` is the single source of truth for the path; called from both `server.ts` and `daemon.ts`
-  - Each distinct env context spawns its own isolated daemon; clients sharing the same env hash reuse one daemon
+- `.env` is **gitignored** and not auto-loaded; secrets come from the shell environment. `${VAR}` is expanded from `process.env` at load (`loadConfig()`; `loadRawConfig()` leaves it intact); a server or profile referencing an unset or empty var is **skipped entirely**
+- Config resolution: `--mcp-file` / `UNIMCP_CONFIG` > `./unimcp.json` > `DEFAULT_MCP_FILE` (`resolveMcpFile()` in `config.ts`). The file may contain comments (JSONC)
+- Daemon pid file `~/.config/unimcp/daemon.<envHash>.pid` holds `"<pid>:<port>"`
+  - `envHash` (`computeEnvHash()`): 8-hex SHA-256 over the config's absolute path, the unimcp version, and every referenced `${VAR}`'s value (unset → `""`). Any change → a separate daemon; clients with the same hash share one
 
 ### Key constants
 ```
 DEFAULT_MCP_FILE = ~/.config/unimcp/unimcp.json          (config.ts)
-CONFIG_DIR       = ~/.config/unimcp                     (server.ts)
-PID_FILE         = ~/.config/unimcp/daemon.<envHash>.pid (computed in server.ts / daemon.ts)
+CONFIG_DIR       = ~/.config/unimcp                     (config.ts)
+PID_FILE         = ~/.config/unimcp/daemon.<envHash>.pid (pidFilePath() in config.ts)
+OAUTH_DIR        = ~/.config/unimcp/oauth               (oauth.ts)
 SYSTEM_BIN_PATH  = /usr/local/bin/unimcp                (setup.ts)
-CLIENT_NAME      = "unimcp"                              (aggregator.ts)
-CLIENT_VERSION   = "1.0.0"                              (aggregator.ts)
-SPAWN_WAIT_S     = SPAWN_WAIT_MS / 1_000                (daemon.ts)
+CLIENT_NAME      = "unimcp"                             (aggregator.ts; version is VERSION from package.json, utils.ts)
+IDLE_TIMEOUT_MS  = 30_000                               (server.ts)
+SPAWN_WAIT_MS    = 15_000                               (daemon.ts)
 SEP              = "__"                                 (aggregator.ts)
+PROFILE_ARG      = "profile"                            (profiles.ts)
 ```
 
 - The daemon is a **shared background process** — `pnpm dev` bridges to it rather than spawning upstreams per client
@@ -296,64 +263,40 @@ SEP              = "__"                                 (aggregator.ts)
 
 ### Per-client tool filtering
 
-- Client-side filtering is controlled via environment variables on the bridge process:
-  - `UNIMCP_INCLUDE` — comma-separated glob patterns (only matching tools visible)
-  - `UNIMCP_EXCLUDE` — comma-separated glob patterns (matching tools hidden)
-- The bridge reads these env vars and forwards them as `X-Tools-Include` / `X-Tools-Exclude` HTTP headers to the daemon
-- The daemon parses these headers into a `ToolFilter` and passes it to `aggregator.listTools(clientFilter?)`
-- `aggregator.listTools(clientFilter?)` applies both the per-server filter (from `srv.include`/`srv.exclude`) AND the client filter (both must pass)
-- Clients without filter env vars see all tools (open default)
-- Direct HTTP callers (not via bridge) can set `X-Tools-Include` / `X-Tools-Exclude` headers directly
+- The bridge forwards `UNIMCP_INCLUDE` / `UNIMCP_EXCLUDE` (comma-separated globs) as `X-Tools-Include` / `X-Tools-Exclude`; the daemon parses them into a `ToolFilter` for `aggregator.listTools(clientFilter?)`. A tool must pass both the server's `include`/`exclude` and the client filter; no filter = all tools. Direct HTTP callers set the headers themselves
 - Grants (`grants.ts`): the config's top-level `grants` maps a grant to `server__tool` globs. The bridge sends the grants it holds (`UNIMCP_GRANTS` + `UNIMCP_GRANTS_FILE`) as `X-Tools-Grants`; the aggregator hides the globs of every grant not held — matched against the *prefixed* name, unlike include/exclude — so a request without the header holds nothing, and `tools/call` rejects a hidden tool. The bridge watches the grants file, reconnects with the new header on change, and sends `tools/list_changed`
 - The daemon rejects `tools/call` for any tool its client filter hides (`aggregator.isCallable`, judged by name so a down server's tools still reach the reconnect)
-- A grant rule may be `{ tool, args }` instead of a glob: it hides nothing, and `tools/call` is refused (`aggregator.lockingGrant`, naming the grant) when an unheld grant's rule matches the prefixed name and every one of its `args` equals the call's. A call no rule matches is open
-- Profiles (`profiles.ts`): `parseGrants` turns a `{ server, vars, description? }` grant into `config.profiles[server][grant]` (`{ vars, description }`; descriptions go into the `profile` argument's description); `aggregator.lockingGrant` refuses a call naming a profile the client doesn't hold, matched on the server prefix (a glob would let a `/` in a tool name slip past). A client sees the group's tools only with a profile held, its enum listing just those. A server with profiles becomes one upstream entry per profile, named `<server>.<profile>` (also its OAuth store key), tagged with `group`, its `{var}`s filled from that profile (`command`/`args`/`env`/`url`/`headers`/`oauth`; a missing var skips the group). Members are never listed or callable by their own name; the group lists the first connected member's tools once with a required `profile` enum (a tool with its own `profile` argument is left out), and `callTool` routes by it and strips it. Members connect in order in `connect()` until one succeeds, so a failing profile can't empty the group; the rest stay `idle` and connect through the on-demand reconnect path on first call
+- A grant rule may be `{ tool, args }` instead of a glob: it hides nothing, and `tools/call` is refused (`aggregator.lockingGrant`, naming the grant) when an unheld grant's rule matches the prefixed name and every one of its `args` equals the call's (pinned args included, so omitting a pinned value can't dodge a rule). A call no rule matches is open
+- Profiles (`profiles.ts`): `parseGrants` turns a `{ server, vars, description? }` grant into `config.profiles[server][grant]`
+  - A server with profiles becomes one upstream per profile, `<server>.<profile>` (also its OAuth store key), with `{var}`s in `command`/`args`/`env`/`url`/`headers`/`oauth` filled from the profile; a missing var skips the group. Server names containing `__` or colliding with a member name are skipped
+  - Members are never listed or callable by their own name. The group lists the first connected member's tools once, with a required `profile` enum of the profiles the client holds (descriptions in the argument's description); a tool with its own `profile` argument is left out. `callTool` routes by it and strips it
+  - `aggregator.lockingGrant` refuses a call naming an unheld profile, matched on the server prefix (a glob would let a `/` in a tool name slip past). A client holding none sees no group tools
+  - `connect()` tries members in order until one succeeds; the rest stay `idle` and connect on first call
 - `pinArgs` (any server): removed from the listed schemas and spread over the call's arguments last, so the client can't override them
 - `$(command)` (`substitute.ts`) runs in `connectClient`, on every connect and reconnect, and in `auth`; only in `env`, `headers` and `oauth.clientSecret` (never `command`/`args`: argv is visible in `ps`). Errors name the command and exit code, never its output
 - Grants are a guardrail, not a security boundary: the daemon trusts the claimed `X-Tools-Grants`. Grant globs are literal (`nonegate`, `nocomment`); empty lists/patterns are rejected at load
 - A loopback-bound daemon answers only requests whose `Host` is a loopback name (DNS rebinding guard); the host comes from `--host`/`UNIMCP_HOST` only, never the generic `HOST`
-- `collect --save` replaces `mcpServers` only, keeping the file's other keys (`grants`)
-
 ### OAuth servers
 
 - An HTTP/SSE server with `"auth": "oauth"` or an `oauth` block (`clientId`, `clientSecret`, `scopes`, `callbackPort`; default port 4849) gets a `FileOAuthProvider`. A `url` without `type` is HTTP.
 - `unimcp auth <name>` runs the browser flow and writes tokens; the daemon is headless — without tokens it fails with `AuthRequiredError` (no retry loop) and connects when it sees the token file change (`retryIfDown`). Refresh is the SDK's, on 401.
 - No `clientId` → dynamic client registration; servers without DCR (e.g. Slack) need `clientId`/`clientSecret`.
 
-### Per-server tool filtering
+### Per-server fields
 
-- Each server in `unimcp.json` can have optional `include` and `exclude` fields (flat, not nested)
-- These are glob patterns applied to tool names before aggregation
-- Example: `"include": ["search_*"], "exclude": ["search_internal"]`
-
-### Server enabled/disabled
-
-- Each server config supports an optional `enabled` field (default: `true`)
-- Set `"enabled": false` to skip a server without removing its config
-- Disabled servers are filtered out in `aggregator.connect()` before any connections are made
+- `include` / `exclude`: globs on the unprefixed tool name, applied before aggregation
+- `enabled: false`: skipped in `aggregator.connect()` without removing the config
 
 ---
 
 ## Collect command
 
-`unimcp collect` reads MCP server configs from all installed editors and merges them.
-
-```bash
-unimcp collect                       # print merged config to stdout
-unimcp collect -o out.json           # write to a file
-unimcp collect --save                # write to ~/.config/unimcp/unimcp.json (default mcp-file)
-unimcp collect --save --mcp-file /path/to/unimcp.json  # write to a custom file
-```
-
-Sources (in order, last-write-wins on name collision):
-1. Claude Code user scope (`~/.claude.json` → `mcpServers`)
-2. Claude Code project scope (`.mcp.json` in cwd → `mcpServers`)
+`unimcp collect` merges MCP configs from installed editors into `{ "mcpServers": … }`: stdout, `-o <file>`, or `--save` (to the resolved config file, replacing only `mcpServers`). Sources, last-write-wins:
+1. Claude Code user (`~/.claude.json` → `mcpServers`)
+2. `.mcp.json` in cwd (`mcpServers`)
 3. Cursor global (`~/.cursor/mcp.json` → `mcpServers`)
 4. VS Code / Copilot global (`~/Library/.../Code/User/mcp.json` → `servers`, remapped)
 5. OpenCode global (`~/.config/opencode/opencode.json` → `mcp`, remapped, enabled only)
-6. `.mcp.json` in cwd (same file as Claude Code project scope — deduplicated naturally)
-
-Output format: `{ "mcpServers": { ... } }` — directly usable as unimcp's unimcp.json.
 
 ---
 
@@ -380,14 +323,10 @@ Output format: `{ "mcpServers": { ... } }` — directly usable as unimcp's unimc
 
 ## npm package
 
-- **Package name**: `@dandehoon/unimcp` (scoped, public)
-- **`bin`**: `./bin/unimcp.js` — thin Node.js launcher that dynamic-imports `dist/unimcp.js` (the bundled output)
-- **`files`**: `src/`, `bin/`, `dist/unimcp.js`, `README.md`, `SECURITY.md` — `dist/unimcp.js` must exist at publish time or the installed `bin/unimcp.js` will fail at import
-- **`publishConfig`**: `{ "access": "public" }`
+- `@dandehoon/unimcp`, public. `bin/unimcp.js` dynamic-imports `dist/unimcp.js`, so that bundle must exist at publish time
+- `engines.node` requires a patched Node (`^22.23.4 || ^24.22.1 || >=26.12.1`); CI pins Bun 1.4.4
 
 ### Release process (manual — no CI publish)
-
-Auto-publish via GitHub Actions was removed (commit `41aec64`). Releases are now driven by a human.
 
 ```bash
 # 1. Bump version in package.json (semver)
@@ -404,13 +343,4 @@ pnpm bundle                       # produces dist/unimcp.js
 pnpm publish --no-git-checks
 ```
 
-Recommended hardening: add `"prepublishOnly": "pnpm bundle"` to `package.json` scripts so the bundle is always rebuilt before publishing — otherwise a forgotten `pnpm bundle` ships a package whose `bin` import resolves to nothing.
-
----
-
-## Before committing
-
-```bash
-pnpm typecheck   # must be clean (zero errors)
-pnpm test        # all tests must pass
-```
+Recommended hardening: add `"prepublishOnly": "pnpm bundle"` so a forgotten bundle can't ship a broken `bin`.
