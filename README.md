@@ -112,7 +112,7 @@ A top-level `grants` map hides the matching tools (globs on `serverName__toolNam
 }
 ```
 
-A client holds the grants in `UNIMCP_GRANTS`, `UNIMCP_GRANTS_FILE`, and whatever `unimcp grant <pid> <grant>…` last set for its process (the bridge's parent; `--drop` clears it). Locked tools are hidden and can't be called by name. When a grants file changes, the bridge updates the client's tool list without a restart.
+A client holds the grants in `UNIMCP_GRANTS`, `UNIMCP_GRANTS_FILE`, and those `unimcp grant <pid>` holds for its process (the bridge's parent). That file is ignored if it predates the process, so a reused pid inherits nothing, and every edit removes the files of processes that have exited. Locked tools are hidden and can't be called by name. When a grants file changes, the bridge updates the client's tool list without a restart.
 
 A rule can also lock calls by argument: `{ "tool": "<glob>", "args": { … } }` leaves the tool listed but refuses a call whose arguments equal every value in `args` (a server's `pinArgs` count as passed). A call no rule matches is open — including one that leaves the argument out, or names the same target another way — so to keep credentials apart, use profiles.
 
@@ -172,7 +172,7 @@ unimcp stop <id>           Stop the daemon whose ID starts with <id>
 unimcp shutdown            Stop every running daemon
 unimcp restart [id]        Stop the current context's daemon, an ID prefix, or --all; the next client respawns it
 unimcp completion          Print the zsh completion script (`install-bin` installs it)
-unimcp grant <pid> [g…]    Set the grants a client process holds (--drop clears them)
+unimcp grant <pid> -- [±g…] Add (+g) or remove (-g) a client process's grants and print them; --drop clears
 unimcp auth <name>         Authorize an OAuth server
 unimcp setup               Register unimcp in client configs
 unimcp collect [--save]    Merge MCP configs from all clients

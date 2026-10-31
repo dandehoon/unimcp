@@ -12,7 +12,8 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { loadRawConfig, missingEnvVars, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, HEADER_TOOLS_GRANTS } from "./config.js";
 import { SEP } from "./aggregator.js";
 import { ensureDaemon } from "./daemon.js";
-import { clientGrantsPath, heldGrants, watchGrantsFiles } from "./grants.js";
+import { heldGrants, watchGrantsFiles } from "./grants.js";
+import { clientGrantsPath, isOwnGrantsFile, processStartMs } from "./client-grants.js";
 import { log, MCP_SERVER_IDENTITY } from "./utils.js";
 
 export type BridgeOptions = {
@@ -127,7 +128,7 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   const stdioTransport = new StdioServerTransport();
   await server.connect(stdioTransport);
 
-  const closeWatcher = watchGrantsFiles(grantsFiles(), () => {
+  const closeWatcher = watchGrantsFiles(grantsFiles(true), () => {
     serialized(syncGrants).catch((err) => log("[bridge] grant refresh failed:", String(err)));
   });
 
@@ -165,10 +166,26 @@ function isTransportError(err: unknown): boolean {
   return TRANSPORT_ERROR_PATTERNS.some((p) => msg.includes(p));
 }
 
-/** `UNIMCP_GRANTS_FILE`, plus the file `unimcp grant` keeps for the client (this bridge's parent). */
-function grantsFiles(): string[] {
+let clientStartMs: number | undefined | null = null;
+
+/** The client's start time, looked up once per bridge. */
+function clientStart(): number | undefined {
+  if (clientStartMs !== null) return clientStartMs;
+  clientStartMs = processStartMs(process.ppid);
+  if (clientStartMs === undefined) log("[bridge] client start time unknown — trusting its grants file as is");
+  return clientStartMs;
+}
+
+/**
+ * `UNIMCP_GRANTS_FILE`, plus the file `unimcp grant` keeps for the client (this bridge's
+ * parent) — to watch, or to read, which skips a client file left by an earlier holder of the pid.
+ */
+function grantsFiles(toWatch = false): string[] {
   const file = process.env["UNIMCP_GRANTS_FILE"];
-  return [...(file ? [file] : []), clientGrantsPath(process.ppid)];
+  const client = clientGrantsPath(process.ppid);
+  const start = toWatch ? undefined : clientStart();
+  const own = start === undefined || isOwnGrantsFile(client, start);
+  return [...(file ? [file] : []), ...(own ? [client] : [])];
 }
 
 function buildFilterHeaders(): Record<string, string> | undefined {

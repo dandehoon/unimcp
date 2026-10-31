@@ -12,11 +12,12 @@ src/
   config.ts       # Config types, JSONC loader, grants/profiles parsing, ${VAR} expansion (skips servers and profiles with unset vars), env-hash, pidFilePath, CONFIG_DIR, header constants
   aggregator.ts   # Upstream client manager — connect, merge tools, route calls, in-flight reconnect
   transport.ts    # Upstream transports (stdio / StreamableHTTP / SSE), transport and auth error checks, withTimeout
+  client-grants.ts # `grants/<pid>` per client process: `unimcp grant` edits, stale and exited-client files ignored or pruned
   stdio.ts        # Starting a stdio upstream — no kill deadline (StillStarting), stderr kept and masked for the error
   server.ts       # Managed HTTP daemon — /health /status /mcp, sessions, idle shutdown, hot reload, port fallback
   daemon.ts       # Daemon spawn / supervisor — detached process, PID file, health-check loop
   bridge.ts       # Stdio ↔ HTTP bridge (default mode) — auto-reconnect, forwards UNIMCP_INCLUDE/EXCLUDE and held grants as headers
-  grants.ts       # Held grants (env + watched files, per-client files `unimcp grant` writes), the globs they leave locked, argument-rule locks, the file watcher
+  grants.ts       # Held grants (env + watched files), the globs they leave locked, argument-rule locks, the file watcher
   profiles.ts     # Profile groups — expand profile grants into members ({var} fill), selector/pinned-arg schema rewrites, call routing
   substitute.ts   # `$(command)` substitution in env/headers/oauth.clientSecret, run as an upstream connects
   oauth.ts        # File-backed OAuthClientProvider (~/.config/unimcp/oauth/<name>.<urlHash>.json), AuthRequiredError

@@ -1,8 +1,8 @@
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync } from "fs";
 import path from "path";
 import { watch } from "chokidar";
 import { Minimatch } from "minimatch";
-import { CONFIG_DIR, type GrantRule } from "./config.js";
+import type { GrantRule } from "./config.js";
 import { readFileSafe, splitCommaSeparated } from "./utils.js";
 
 // Patterns are literal globs: no `!` negation (which would invert a grant lock) and no `#` comments.
@@ -20,21 +20,6 @@ export function heldGrants(envList: string | undefined, files: string[]): Set<st
     }
   }
   return held;
-}
-
-/** The grants file of one client process, which `unimcp grant` writes and its bridge reads. */
-export function clientGrantsPath(pid: number, dir = CONFIG_DIR): string {
-  return path.join(dir, "grants", String(pid));
-}
-
-/** Replace the grants a client process holds; `null` removes its file. */
-export function writeClientGrants(pid: number, grants: string[] | null, dir = CONFIG_DIR): void {
-  const file = clientGrantsPath(pid, dir);
-  if (grants === null) return rmSync(file, { force: true });
-  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  // Rename into place: a watching bridge must never read half a list.
-  writeFileSync(`${file}.${process.pid}`, grants.map((g) => `${g}\n`).join(""));
-  renameSync(`${file}.${process.pid}`, file);
 }
 
 /** `server__tool` globs of every grant not held — hidden until granted. Argument rules hide nothing. */

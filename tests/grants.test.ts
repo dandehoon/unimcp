@@ -1,25 +1,13 @@
 import { describe, test, expect } from "bun:test";
-import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
+import { writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { clientGrantsPath, heldGrants, writeClientGrants, lockedPatterns, lockingGrant } from "../src/grants.js";
+import { heldGrants, lockedPatterns, lockingGrant } from "../src/grants.js";
 import { loadConfig, loadRawConfig } from "../src/config.js";
 import { Aggregator } from "../src/aggregator.js";
 
 const dir = join(tmpdir(), `unimcp-grants-${Date.now()}`);
 mkdirSync(dir, { recursive: true });
-
-describe("writeClientGrants", () => {
-  test("replaces a client's list, which heldGrants reads; null removes the file", () => {
-    const file = clientGrantsPath(42, dir);
-    writeClientGrants(42, ["devdb", "prod"], dir);
-    writeClientGrants(42, ["devdb"], dir);
-    expect(readFileSync(file, "utf8")).toBe("devdb\n");
-    expect([...heldGrants(undefined, [file])]).toEqual(["devdb"]);
-    writeClientGrants(42, null, dir);
-    expect(existsSync(file)).toBe(false);
-  });
-});
 
 describe("heldGrants", () => {
   test("merges the env list with the file's lines", () => {

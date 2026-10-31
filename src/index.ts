@@ -10,7 +10,7 @@ import { resolveMcpFile, computeEnvHash } from "./config.js";
 import { runStatus } from "./status.js";
 import { runStop } from "./stop.js";
 import { zshCompletion } from "./completion.js";
-import { writeClientGrants } from "./grants.js";
+import { dropClientGrants, editClientGrants, readClientGrants } from "./client-grants.js";
 import { runAuth } from "./auth.js";
 import { cmdList, cmdGet, cmdAdd, cmdAddJson, cmdRemove } from "./mcp.js";
 import type { AddOpts } from "./mcp.js";
@@ -184,12 +184,14 @@ program
   });
 
 program
-  .command("grant <pid> [grants...]")
-  .description("Set the grants a client process holds (replacing its list); its bridge applies them live")
-  .option("--drop", "Remove the client's grants file")
-  .action((pid: string, grants: string[], opts: { drop?: boolean }) => {
+  .command("grant <pid> [edits...]")
+  .description("Edit the grants a client process holds (+name or name adds, -name removes; put them after --) and print them")
+  .option("--drop", "Remove all the client's grants")
+  .action((pid: string, edits: string[], opts: { drop?: boolean }) => {
     if (!/^[1-9]\d*$/.test(pid)) throw new Error(`[grant] <pid> must be a process id, got '${pid}'`);
-    writeClientGrants(Number(pid), opts.drop ? null : grants);
+    if (opts.drop) return dropClientGrants(Number(pid));
+    const held = edits.length ? editClientGrants(Number(pid), edits) : readClientGrants(Number(pid));
+    if (held.length) process.stdout.write(`${held.join("\n")}\n`);
   });
 
 program
