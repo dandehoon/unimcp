@@ -4,8 +4,9 @@ import { CONFIG_DIR, pidFilePath } from "./config.js";
 import { parsePidFile, isAlive } from "./daemon.js";
 import { log, tryUnlink } from "./utils.js";
 
+/** One target: every daemon (`all`), an ID prefix (`id`), or the daemon of the current context (`envHash`). */
 export type StopOptions = {
-  envHash: string;
+  envHash?: string;
   id?: string;
   all?: boolean;
 };
@@ -15,7 +16,7 @@ export function runStop(opts: StopOptions): number {
     ? discoverAllPidFiles()
     : opts.id
       ? findByPrefix(opts.id)
-      : [pidFilePath(opts.envHash)];
+      : opts.envHash ? [pidFilePath(opts.envHash)] : [];
 
   let stopped = 0;
   for (const pidFile of targets) {

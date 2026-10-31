@@ -13,11 +13,11 @@ describe("heldGrants", () => {
   test("merges the env list with the file's lines", () => {
     const file = join(dir, "held");
     writeFileSync(file, "devdb\n\n prod \n");
-    expect([...heldGrants("proddb, deploy-write", file)].sort()).toEqual(["deploy-write", "devdb", "prod", "proddb"]);
+    expect([...heldGrants("proddb, deploy-write", [file])].sort()).toEqual(["deploy-write", "devdb", "prod", "proddb"]);
   });
 
   test("a missing file holds nothing", () => {
-    expect(heldGrants(undefined, join(dir, "absent")).size).toBe(0);
+    expect(heldGrants(undefined, [join(dir, "absent")]).size).toBe(0);
   });
 });
 

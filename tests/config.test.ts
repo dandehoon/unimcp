@@ -43,6 +43,16 @@ describe("loadConfig", () => {
     delete process.env.TEST_TOKEN;
   });
 
+  test("records every expanded value, args included, for masking", () => {
+    process.env.TEST_ARG_SECRET = "mongodb://u:p@db";
+    const file = join(dir, "env-expanded-values.json");
+    writeFileSync(file, JSON.stringify({
+      mcpServers: { server: { command: "srv", args: ["--uri", "${TEST_ARG_SECRET}"] } },
+    }));
+    expect(loadConfig(file).expandedValues).toEqual(["mongodb://u:p@db"]);
+    delete process.env.TEST_ARG_SECRET;
+  });
+
   test("drops servers referencing an unset env var", () => {
     const file = join(dir, "missing-env.json");
     writeFileSync(file, '{"mcpServers": {"s": {"command": "${MISSING_VAR_XYZ}"}, "ok": {"command": "npx"}}}');

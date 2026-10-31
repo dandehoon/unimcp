@@ -8,14 +8,16 @@ Coding agent reference for the **unimcp** repository: a TypeScript MCP aggregato
 
 ```
 src/
-  index.ts        # Commander CLI entry — routes to bridge, daemon, server, setup, collect, auth, mcp/status/stop
+  index.ts        # Commander CLI entry — routes to bridge, daemon, server, setup, collect, auth, grant, completion, mcp/status/stop; a terminal on stdin means `status`
   config.ts       # Config types, JSONC loader, grants/profiles parsing, ${VAR} expansion (skips servers and profiles with unset vars), env-hash, pidFilePath, CONFIG_DIR, header constants
   aggregator.ts   # Upstream client manager — connect, merge tools, route calls, in-flight reconnect
   transport.ts    # Upstream transports (stdio / StreamableHTTP / SSE), transport and auth error checks, withTimeout
+  client-grants.ts # `grants/<pid>` per client process: `unimcp grant` edits, stale and exited-client files ignored or pruned
+  stdio.ts        # Starting a stdio upstream — no kill deadline (StillStarting), stderr kept and masked for the error
   server.ts       # Managed HTTP daemon — /health /status /mcp, sessions, idle shutdown, hot reload, port fallback
   daemon.ts       # Daemon spawn / supervisor — detached process, PID file, health-check loop
   bridge.ts       # Stdio ↔ HTTP bridge (default mode) — auto-reconnect, forwards UNIMCP_INCLUDE/EXCLUDE and held grants as headers
-  grants.ts       # Held grants (env + watched file), the globs they leave locked, argument-rule locks, the file watcher
+  grants.ts       # Held grants (env + watched files), the globs they leave locked, argument-rule locks, the file watcher
   profiles.ts     # Profile groups — expand profile grants into members ({var} fill), selector/pinned-arg schema rewrites, call routing
   substitute.ts   # `$(command)` substitution in env/headers/oauth.clientSecret, run as an upstream connects
   oauth.ts        # File-backed OAuthClientProvider (~/.config/unimcp/oauth/<name>.<urlHash>.json), AuthRequiredError
@@ -23,14 +25,15 @@ src/
   setup.ts        # `setup` command — register unimcp in client configs
   collect.ts      # `collect` command — read MCP configs from all clients, merge, output
   status.ts       # `status` command — list running daemons + loaded tools
-  stop.ts         # `stop` / `restart` commands — kill by ID prefix, current context, or --all
+  stop.ts         # `stop <id>` (ID prefix), `shutdown` (all), `restart` (ID prefix, current context, or --all)
+  completion.ts   # `completion` command — zsh script generated from the commander tree
   mcp.ts          # `list` / `get` / `add` / `add-json` / `remove` server CRUD
   mcp-format.ts   # CLI pretty-printer for server entries
   utils.ts        # Shared utilities (log, writeFileSafe, tryUnlink, identity constants, glob splitters)
 bin/
   unimcp.js       # npm launcher: dynamic-imports dist/unimcp.js (the bundled output)
 tests/
-  *.test.ts       # Unit tests (bun test) — aggregator, config, grants, oauth, profiles, setup, substitute, utils
+  *.test.ts       # bun test — unit tests, plus stdio-start (spawns fixtures/stdio-server.ts)
 .github/
   workflows/
     ci.yml        # Type check + unit tests on push/PR to main
@@ -75,7 +78,7 @@ flowchart TB
 
     ed <-- "stdio JSON-RPC" --> idx1
     dmn -. "spawn detached if<br/>PID file missing or /health fails" .-> idx2
-    br -- "HTTP /mcp<br/>X-Tools-Include / X-Tools-Exclude" --> srv
+    br -- "HTTP /mcp<br/>X-Tools-Include / -Exclude / -Grants" --> srv
     agg -- "MCP Client" --> u1
     agg -- "MCP Client" --> u2
 ```
@@ -92,7 +95,7 @@ flowchart TB
 
 ```bash
 # Development (no compile step — bun runs TS natively)
-pnpm dev            # stdio mode: ensure daemon + bridge
+pnpm dev            # piped stdin: ensure daemon + bridge; a terminal on stdin prints status instead
 pnpm http           # HTTP mode: managed server on :4848
 pnpm daemon         # --daemon, an alias for --http
 pnpm collect        # print merged config from all editors to stdout
@@ -105,10 +108,10 @@ pnpm test           # bun test tests/ — run unit tests
 # Build & install
 pnpm bundle         # bun build --target=node → dist/unimcp.js (what the npm package runs)
 pnpm build          # bun build --compile --minify → dist/unimcp
-pnpm install-bin    # build + cp dist/unimcp /usr/local/bin/unimcp
+pnpm install-bin    # build + cp dist/unimcp /usr/local/bin/unimcp + zsh completion into /usr/local/share/zsh/site-functions
 ```
 
-No integration tests. Before committing: `pnpm typecheck` (zero errors) and `pnpm test` (all pass); smoke test: `printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | timeout 20 pnpm dev 2>/dev/null`
+Tests are unit-level; `stdio-start.test.ts` spawns `tests/fixtures/stdio-server.ts` as a real child, nothing networked. Before committing: `pnpm typecheck` (zero errors) and `pnpm test` (all pass); smoke test: `printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | timeout 20 pnpm dev 2>/dev/null`
 
 ---
 
@@ -235,6 +238,8 @@ Upstream clients are built in `transport.ts` (`buildTransport`, `buildSSETranspo
 
 ## Key architectural rules
 
+- **This repo is public — keep the author's setup out of it.** Code, comments, tests, docs, commit messages and PR text use generic examples: no real server names, hosts, connection strings, tokens, internal URLs, company or project names, personal paths, or numbers measured on one machine. Describe the general case ("a cold `npx` install can take minutes"), not the incident that prompted it
+- **Anything an upstream emits is shown masked.** Its stderr reaches `lastError` → `/status` and `unimcp status` only through `stdio.ts`, masked against the server's `env` values and every `${VAR}` value the config expanded (`Config.expandedValues`); `$(command)` failures name the command, never its output
 - `unimcp.json` is **gitignored** — never commit it; it is user-local
 - `.env` is **gitignored** and not auto-loaded; secrets come from the shell environment. `${VAR}` is expanded from `process.env` at load (`loadConfig()`; `loadRawConfig()` leaves it intact); a server or profile referencing an unset or empty var is **skipped entirely**
 - Config resolution: `--mcp-file` / `UNIMCP_CONFIG` > `./unimcp.json` > `DEFAULT_MCP_FILE` (`resolveMcpFile()` in `config.ts`). The file may contain comments (JSONC)
@@ -247,6 +252,7 @@ DEFAULT_MCP_FILE = ~/.config/unimcp/unimcp.json          (config.ts)
 CONFIG_DIR       = ~/.config/unimcp                     (config.ts)
 PID_FILE         = ~/.config/unimcp/daemon.<envHash>.pid (pidFilePath() in config.ts)
 OAUTH_DIR        = ~/.config/unimcp/oauth               (oauth.ts)
+CLIENT_GRANTS    = ~/.config/unimcp/grants/<pid>        (clientGrantsPath() in client-grants.ts)
 SYSTEM_BIN_PATH  = /usr/local/bin/unimcp                (setup.ts)
 CLIENT_NAME      = "unimcp"                             (aggregator.ts; version is VERSION from package.json, utils.ts)
 IDLE_TIMEOUT_MS  = 30_000                               (server.ts)
@@ -264,18 +270,20 @@ PROFILE_ARG      = "profile"                            (profiles.ts)
 ### Per-client tool filtering
 
 - The bridge forwards `UNIMCP_INCLUDE` / `UNIMCP_EXCLUDE` (comma-separated globs) as `X-Tools-Include` / `X-Tools-Exclude`; the daemon parses them into a `ToolFilter` for `aggregator.listTools(clientFilter?)`. A tool must pass both the server's `include`/`exclude` and the client filter; no filter = all tools. Direct HTTP callers set the headers themselves
-- Grants (`grants.ts`): the config's top-level `grants` maps a grant to `server__tool` globs. The bridge sends the grants it holds (`UNIMCP_GRANTS` + `UNIMCP_GRANTS_FILE`) as `X-Tools-Grants`; the aggregator hides the globs of every grant not held — matched against the *prefixed* name, unlike include/exclude — so a request without the header holds nothing, and `tools/call` rejects a hidden tool. The bridge watches the grants file, reconnects with the new header on change, and sends `tools/list_changed`
+- Grants (`grants.ts`): the config's top-level `grants` maps a grant to `server__tool` globs. The bridge sends the grants it holds (`UNIMCP_GRANTS` + `UNIMCP_GRANTS_FILE` + `grants/<client pid>` in the config dir, written by `unimcp grant`) as `X-Tools-Grants`; the aggregator hides the globs of every grant not held — matched against the *prefixed* name, unlike include/exclude — so a request without the header holds nothing, and `tools/call` rejects a hidden tool. The bridge watches the grants files, reconnects with the new header on change, and sends `tools/list_changed`
 - The daemon rejects `tools/call` for any tool its client filter hides (`aggregator.isCallable`, judged by name so a down server's tools still reach the reconnect)
 - A grant rule may be `{ tool, args }` instead of a glob: it hides nothing, and `tools/call` is refused (`aggregator.lockingGrant`, naming the grant) when an unheld grant's rule matches the prefixed name and every one of its `args` equals the call's (pinned args included, so omitting a pinned value can't dodge a rule). A call no rule matches is open
 - Profiles (`profiles.ts`): `parseGrants` turns a `{ server, vars, description? }` grant into `config.profiles[server][grant]`
   - A server with profiles becomes one upstream per profile, `<server>.<profile>` (also its OAuth store key), with `{var}`s in `command`/`args`/`env`/`url`/`headers`/`oauth` filled from the profile; a missing var skips the group. Server names containing `__` or colliding with a member name are skipped
   - Members are never listed or callable by their own name. The group lists the first connected member's tools once, with a required `profile` enum of the profiles the client holds (descriptions in the argument's description); a tool with its own `profile` argument is left out. `callTool` routes by it and strips it
   - `aggregator.lockingGrant` refuses a call naming an unheld profile, matched on the server prefix (a glob would let a `/` in a tool name slip past). A client holding none sees no group tools
-  - `connect()` tries members in order until one succeeds; the rest stay `idle` and connect on first call
+  - `connect()` tries members in order until one succeeds or is `starting`; the rest stay `idle` and connect on first call
+- A stdio upstream gets no kill deadline (`stdio.ts`): one still running after 30 s is left `starting` (usually a first `npx` install) and adopted when it answers, or stopped after 10 min as hung. Nothing starts a second copy into the same install dir meanwhile: calls to it, or to a profile sibling starting or connecting, fail fast, and a config reload waits for it (`whenStarted`). A failed start's `lastError` carries the child's last stderr lines, masked (see above); its stderr is also forwarded to the daemon's own, as an inherited stream would be
 - `pinArgs` (any server): removed from the listed schemas and spread over the call's arguments last, so the client can't override them
 - `$(command)` (`substitute.ts`) runs in `connectClient`, on every connect and reconnect, and in `auth`; only in `env`, `headers` and `oauth.clientSecret` (never `command`/`args`: argv is visible in `ps`). Errors name the command and exit code, never its output
 - Grants are a guardrail, not a security boundary: the daemon trusts the claimed `X-Tools-Grants`. Grant globs are literal (`nonegate`, `nocomment`); empty lists/patterns are rejected at load
 - A loopback-bound daemon answers only requests whose `Host` is a loopback name (DNS rebinding guard); the host comes from `--host`/`UNIMCP_HOST` only, never the generic `HOST`
+
 ### OAuth servers
 
 - An HTTP/SSE server with `"auth": "oauth"` or an `oauth` block (`clientId`, `clientSecret`, `scopes`, `callbackPort`; default port 4849) gets a `FileOAuthProvider`. A `url` without `type` is HTTP.

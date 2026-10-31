@@ -92,6 +92,8 @@ export type Config = {
   grants?: Record<string, GrantRule[]>;
   /** Server → profile → vars, from the profile grants; such a server is listed once with a `profile` argument. */
   profiles?: Record<string, Record<string, Profile>>;
+  /** Every value a `${VAR}` expanded to, args included: masked wherever an upstream's output is shown. */
+  expandedValues?: string[];
 };
 
 export type ResolveMcpFileOpts = {
@@ -176,15 +178,18 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 export function loadConfig(filePath: string): Config {
   const raw = loadRawConfig(filePath);
   const mcpServers: Record<string, ServerConfig> = {};
+  const expanded = new Set<string>();
   for (const [rawName, rawSrv] of Object.entries(raw.mcpServers)) {
-    const { resolved, missing } = resolveEnvRefs({ name: rawName, srv: rawSrv });
+    const { resolved, missing, used } = resolveEnvRefs({ name: rawName, srv: rawSrv });
     if (missing.length > 0) {
       if (rawSrv.enabled !== false) log(`[config] skipping '${rawName}' — unset env var(s): ${missing.join(", ")}`);
       continue;
     }
     mcpServers[resolved.name] = resolved.srv;
+    for (const v of used) expanded.add(v);
   }
-  return { mcpServers, grants: raw.grants, profiles: resolveProfiles(raw.profiles) };
+  const profiles = resolveProfiles(raw.profiles, expanded);
+  return { mcpServers, grants: raw.grants, profiles, expandedValues: [...expanded] };
 }
 
 /** Names of `${VAR}` references in a server config that are unset or empty. */
@@ -214,20 +219,24 @@ export function computeEnvHash(filePath: string): string {
 // --- helpers ---
 
 /** Profiles with `${VAR}` expanded in their vars; a profile referencing an unset var is dropped. */
-function resolveProfiles(profiles: Config["profiles"]): Config["profiles"] {
+function resolveProfiles(profiles: Config["profiles"], expanded: Set<string>): Config["profiles"] {
   if (!profiles) return profiles;
   return Object.fromEntries(Object.entries(profiles).map(([server, byName]) => [server, Object.fromEntries(
     Object.entries(byName).flatMap(([name, profile]) => {
-      const { resolved, missing } = resolveEnvRefs(profile.vars);
-      if (missing.length === 0) return [[name, { ...profile, vars: resolved }]];
+      const { resolved, missing, used } = resolveEnvRefs(profile.vars);
+      if (missing.length === 0) {
+        for (const v of used) expanded.add(v);
+        return [[name, { ...profile, vars: resolved }]];
+      }
       log(`[config] skipping profile '${name}' of '${server}' — unset env var(s): ${missing.join(", ")}`);
       return [];
     }),
   )]));
 }
 
-function resolveEnvRefs<T>(value: T): { resolved: T; missing: string[] } {
+function resolveEnvRefs<T>(value: T): { resolved: T; missing: string[]; used: string[] } {
   const missing = new Set<string>();
+  const used = new Set<string>();
   const resolved = mapStrings(value, (s) =>
     s.replace(ENV_VAR_RE, (_match: string, name: string) => {
       const value = process.env[name];
@@ -235,10 +244,11 @@ function resolveEnvRefs<T>(value: T): { resolved: T; missing: string[] } {
         missing.add(name);
         return "";
       }
+      used.add(value);
       return value;
     })
   );
-  return { resolved, missing: [...missing] };
+  return { resolved, missing: [...missing], used: [...used] };
 }
 
 function mapStrings<T>(value: T, fn: (s: string) => string): T {
