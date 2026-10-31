@@ -1,8 +1,8 @@
-import { mkdirSync } from "fs";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "fs";
 import path from "path";
 import { watch } from "chokidar";
 import { Minimatch } from "minimatch";
-import type { GrantRule } from "./config.js";
+import { CONFIG_DIR, type GrantRule } from "./config.js";
 import { readFileSafe, splitCommaSeparated } from "./utils.js";
 
 // Patterns are literal globs: no `!` negation (which would invert a grant lock) and no `#` comments.
@@ -10,22 +10,31 @@ export const GLOB_OPTS = { nonegate: true, nocomment: true, dot: true };
 
 /**
  * Grants a bridge holds: the comma list in `envList` (fixed at launch) plus one per line
- * of `file` (changeable mid-session). A missing file holds nothing.
+ * of each file (changeable mid-session). A missing file holds nothing.
  */
-export function heldGrants(envList: string | undefined, file: string | undefined): Set<string> {
+export function heldGrants(envList: string | undefined, files: string[]): Set<string> {
   const held = new Set(envList ? splitCommaSeparated(envList) : []);
-  for (const line of (file ? readFileSafe(file) ?? "" : "").split("\n")) {
-    if (line.trim()) held.add(line.trim());
+  for (const file of files) {
+    for (const line of (readFileSafe(file) ?? "").split("\n")) {
+      if (line.trim()) held.add(line.trim());
+    }
   }
   return held;
 }
 
-/**
- * The grants file path with `{ppid}` replaced by the client's pid (the bridge's parent), so
- * one config entry gives each client process its own file.
- */
-export function grantsFilePath(raw: string | undefined, ppid = process.ppid): string | undefined {
-  return raw?.replaceAll("{ppid}", String(ppid));
+/** The grants file of one client process, which `unimcp grant` writes and its bridge reads. */
+export function clientGrantsPath(pid: number, dir = CONFIG_DIR): string {
+  return path.join(dir, "grants", String(pid));
+}
+
+/** Replace the grants a client process holds; `null` removes its file. */
+export function writeClientGrants(pid: number, grants: string[] | null, dir = CONFIG_DIR): void {
+  const file = clientGrantsPath(pid, dir);
+  if (grants === null) return rmSync(file, { force: true });
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  // Rename into place: a watching bridge must never read half a list.
+  writeFileSync(`${file}.${process.pid}`, grants.map((g) => `${g}\n`).join(""));
+  renameSync(`${file}.${process.pid}`, file);
 }
 
 /** `server__tool` globs of every grant not held — hidden until granted. Argument rules hide nothing. */
@@ -50,13 +59,12 @@ function matchesArgRule(rule: Exclude<GrantRule, string>, call: GrantedCall): bo
     Object.entries(rule.args).every(([k, v]) => call.args[k] === v);
 }
 
-/** Calls `onChange` whenever the grants file is written or removed. Returns the closer. */
-export function watchGrantsFile(file: string | undefined, onChange: () => void): () => Promise<void> {
-  if (!file) return async () => {};
+/** Calls `onChange` whenever a grants file is written or removed. Returns the closer. */
+export function watchGrantsFiles(files: string[], onChange: () => void): () => Promise<void> {
   // chokidar reports nothing for a file whose directory doesn't exist yet, so the first
   // grant ever written would go unseen by bridges already running.
-  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const watcher = watch(file, { ignoreInitial: true });
+  for (const file of files) mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const watcher = watch(files, { ignoreInitial: true });
   watcher.on("add", onChange).on("change", onChange).on("unlink", onChange);
   return () => watcher.close();
 }

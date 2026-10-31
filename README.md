@@ -88,7 +88,7 @@ flowchart LR
 | `UNIMCP_INCLUDE` | Comma-separated globs; only matching tools are visible |
 | `UNIMCP_EXCLUDE` | Comma-separated globs; matching tools are hidden |
 | `UNIMCP_GRANTS` | Comma-separated grants this client holds |
-| `UNIMCP_GRANTS_FILE` | File of grants, one per line; changes apply mid-session. `{ppid}` becomes the client's pid, for a file per client process |
+| `UNIMCP_GRANTS_FILE` | File of grants, one per line; changes apply mid-session |
 
 ### Per-client tool control
 
@@ -112,7 +112,7 @@ A top-level `grants` map hides the matching tools (globs on `serverName__toolNam
 }
 ```
 
-A client holds the grants in `UNIMCP_GRANTS` and `UNIMCP_GRANTS_FILE`. Locked tools are hidden and can't be called by name. When the grants file changes, the bridge updates the client's tool list without a restart.
+A client holds the grants in `UNIMCP_GRANTS`, `UNIMCP_GRANTS_FILE`, and whatever `unimcp grant <pid> <grant>…` last set for its process (the bridge's parent; `--drop` clears it). Locked tools are hidden and can't be called by name. When a grants file changes, the bridge updates the client's tool list without a restart.
 
 A rule can also lock calls by argument: `{ "tool": "<glob>", "args": { … } }` leaves the tool listed but refuses a call whose arguments equal every value in `args` (a server's `pinArgs` count as passed). A call no rule matches is open — including one that leaves the argument out, or names the same target another way — so to keep credentials apart, use profiles.
 
@@ -172,6 +172,7 @@ unimcp stop <id>           Stop the daemon whose ID starts with <id>
 unimcp shutdown            Stop every running daemon
 unimcp restart [id]        Stop the current context's daemon, an ID prefix, or --all; the next client respawns it
 unimcp completion          Print the zsh completion script (`install-bin` installs it)
+unimcp grant <pid> [g…]    Set the grants a client process holds (--drop clears them)
 unimcp auth <name>         Authorize an OAuth server
 unimcp setup               Register unimcp in client configs
 unimcp collect [--save]    Merge MCP configs from all clients

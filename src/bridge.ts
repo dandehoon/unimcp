@@ -12,7 +12,7 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { loadRawConfig, missingEnvVars, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, HEADER_TOOLS_GRANTS } from "./config.js";
 import { SEP } from "./aggregator.js";
 import { ensureDaemon } from "./daemon.js";
-import { grantsFilePath, heldGrants, watchGrantsFile } from "./grants.js";
+import { clientGrantsPath, heldGrants, watchGrantsFiles } from "./grants.js";
 import { log, MCP_SERVER_IDENTITY } from "./utils.js";
 
 export type BridgeOptions = {
@@ -127,7 +127,7 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   const stdioTransport = new StdioServerTransport();
   await server.connect(stdioTransport);
 
-  const closeWatcher = watchGrantsFile(grantsFilePath(process.env["UNIMCP_GRANTS_FILE"]), () => {
+  const closeWatcher = watchGrantsFiles(grantsFiles(), () => {
     serialized(syncGrants).catch((err) => log("[bridge] grant refresh failed:", String(err)));
   });
 
@@ -165,10 +165,16 @@ function isTransportError(err: unknown): boolean {
   return TRANSPORT_ERROR_PATTERNS.some((p) => msg.includes(p));
 }
 
+/** `UNIMCP_GRANTS_FILE`, plus the file `unimcp grant` keeps for the client (this bridge's parent). */
+function grantsFiles(): string[] {
+  const file = process.env["UNIMCP_GRANTS_FILE"];
+  return [...(file ? [file] : []), clientGrantsPath(process.ppid)];
+}
+
 function buildFilterHeaders(): Record<string, string> | undefined {
   const include = process.env["UNIMCP_INCLUDE"];
   const exclude = process.env["UNIMCP_EXCLUDE"];
-  const grants = [...heldGrants(process.env["UNIMCP_GRANTS"], grantsFilePath(process.env["UNIMCP_GRANTS_FILE"]))].join(",");
+  const grants = [...heldGrants(process.env["UNIMCP_GRANTS"], grantsFiles())].join(",");
   if (!include && !exclude && !grants) return undefined;
   const headers: Record<string, string> = {};
   if (include) headers[HEADER_TOOLS_INCLUDE] = include;

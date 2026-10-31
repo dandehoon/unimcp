@@ -1,19 +1,23 @@
 import { describe, test, expect } from "bun:test";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { grantsFilePath, heldGrants, lockedPatterns, lockingGrant } from "../src/grants.js";
+import { clientGrantsPath, heldGrants, writeClientGrants, lockedPatterns, lockingGrant } from "../src/grants.js";
 import { loadConfig, loadRawConfig } from "../src/config.js";
 import { Aggregator } from "../src/aggregator.js";
 
 const dir = join(tmpdir(), `unimcp-grants-${Date.now()}`);
 mkdirSync(dir, { recursive: true });
 
-describe("grantsFilePath", () => {
-  test("replaces {ppid} with the client's pid", () => {
-    expect(grantsFilePath("/g/pid/{ppid}", 42)).toBe("/g/pid/42");
-    expect(grantsFilePath("/g/fixed", 42)).toBe("/g/fixed");
-    expect(grantsFilePath(undefined, 42)).toBeUndefined();
+describe("writeClientGrants", () => {
+  test("replaces a client's list, which heldGrants reads; null removes the file", () => {
+    const file = clientGrantsPath(42, dir);
+    writeClientGrants(42, ["devdb", "prod"], dir);
+    writeClientGrants(42, ["devdb"], dir);
+    expect(readFileSync(file, "utf8")).toBe("devdb\n");
+    expect([...heldGrants(undefined, [file])]).toEqual(["devdb"]);
+    writeClientGrants(42, null, dir);
+    expect(existsSync(file)).toBe(false);
   });
 });
 
@@ -21,11 +25,11 @@ describe("heldGrants", () => {
   test("merges the env list with the file's lines", () => {
     const file = join(dir, "held");
     writeFileSync(file, "devdb\n\n prod \n");
-    expect([...heldGrants("proddb, deploy-write", file)].sort()).toEqual(["deploy-write", "devdb", "prod", "proddb"]);
+    expect([...heldGrants("proddb, deploy-write", [file])].sort()).toEqual(["deploy-write", "devdb", "prod", "proddb"]);
   });
 
   test("a missing file holds nothing", () => {
-    expect(heldGrants(undefined, join(dir, "absent")).size).toBe(0);
+    expect(heldGrants(undefined, [join(dir, "absent")]).size).toBe(0);
   });
 });
 

@@ -10,6 +10,7 @@ import { resolveMcpFile, computeEnvHash } from "./config.js";
 import { runStatus } from "./status.js";
 import { runStop } from "./stop.js";
 import { zshCompletion } from "./completion.js";
+import { writeClientGrants } from "./grants.js";
 import { runAuth } from "./auth.js";
 import { cmdList, cmdGet, cmdAdd, cmdAddJson, cmdRemove } from "./mcp.js";
 import type { AddOpts } from "./mcp.js";
@@ -180,6 +181,15 @@ program
     const stopped = runStop({ envHash, id, all: opts.all });
     if (stopped > 0) log("[restart] daemon(s) stopped — will respawn on next client connection");
     else log("[restart] no running daemons to restart");
+  });
+
+program
+  .command("grant <pid> [grants...]")
+  .description("Set the grants a client process holds (replacing its list); its bridge applies them live")
+  .option("--drop", "Remove the client's grants file")
+  .action((pid: string, grants: string[], opts: { drop?: boolean }) => {
+    if (!/^[1-9]\d*$/.test(pid)) throw new Error(`[grant] <pid> must be a process id, got '${pid}'`);
+    writeClientGrants(Number(pid), opts.drop ? null : grants);
   });
 
 program
