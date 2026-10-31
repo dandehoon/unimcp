@@ -8,7 +8,7 @@ Coding agent reference for the **unimcp** repository: a TypeScript MCP aggregato
 
 ```
 src/
-  index.ts        # Commander CLI entry — routes to bridge, daemon, server, setup, collect, auth, mcp/status/stop
+  index.ts        # Commander CLI entry — routes to bridge, daemon, server, setup, collect, auth, grant, completion, mcp/status/stop; a terminal on stdin means `status`
   config.ts       # Config types, JSONC loader, grants/profiles parsing, ${VAR} expansion (skips servers and profiles with unset vars), env-hash, pidFilePath, CONFIG_DIR, header constants
   aggregator.ts   # Upstream client manager — connect, merge tools, route calls, in-flight reconnect
   transport.ts    # Upstream transports (stdio / StreamableHTTP / SSE), transport and auth error checks, withTimeout
@@ -33,7 +33,7 @@ src/
 bin/
   unimcp.js       # npm launcher: dynamic-imports dist/unimcp.js (the bundled output)
 tests/
-  *.test.ts       # Unit tests (bun test) — aggregator, config, grants, oauth, profiles, setup, substitute, utils
+  *.test.ts       # bun test — unit tests, plus stdio-start (spawns fixtures/stdio-server.ts)
 .github/
   workflows/
     ci.yml        # Type check + unit tests on push/PR to main
@@ -78,7 +78,7 @@ flowchart TB
 
     ed <-- "stdio JSON-RPC" --> idx1
     dmn -. "spawn detached if<br/>PID file missing or /health fails" .-> idx2
-    br -- "HTTP /mcp<br/>X-Tools-Include / X-Tools-Exclude" --> srv
+    br -- "HTTP /mcp<br/>X-Tools-Include / -Exclude / -Grants" --> srv
     agg -- "MCP Client" --> u1
     agg -- "MCP Client" --> u2
 ```
@@ -108,7 +108,7 @@ pnpm test           # bun test tests/ — run unit tests
 # Build & install
 pnpm bundle         # bun build --target=node → dist/unimcp.js (what the npm package runs)
 pnpm build          # bun build --compile --minify → dist/unimcp
-pnpm install-bin    # build + cp dist/unimcp /usr/local/bin/unimcp
+pnpm install-bin    # build + cp dist/unimcp /usr/local/bin/unimcp + zsh completion into /usr/local/share/zsh/site-functions
 ```
 
 Tests are unit-level; `stdio-start.test.ts` spawns `tests/fixtures/stdio-server.ts` as a real child, nothing networked. Before committing: `pnpm typecheck` (zero errors) and `pnpm test` (all pass); smoke test: `printf '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n' | timeout 20 pnpm dev 2>/dev/null`
@@ -252,6 +252,7 @@ DEFAULT_MCP_FILE = ~/.config/unimcp/unimcp.json          (config.ts)
 CONFIG_DIR       = ~/.config/unimcp                     (config.ts)
 PID_FILE         = ~/.config/unimcp/daemon.<envHash>.pid (pidFilePath() in config.ts)
 OAUTH_DIR        = ~/.config/unimcp/oauth               (oauth.ts)
+CLIENT_GRANTS    = ~/.config/unimcp/grants/<pid>        (clientGrantsPath() in client-grants.ts)
 SYSTEM_BIN_PATH  = /usr/local/bin/unimcp                (setup.ts)
 CLIENT_NAME      = "unimcp"                             (aggregator.ts; version is VERSION from package.json, utils.ts)
 IDLE_TIMEOUT_MS  = 30_000                               (server.ts)
@@ -282,6 +283,7 @@ PROFILE_ARG      = "profile"                            (profiles.ts)
 - `$(command)` (`substitute.ts`) runs in `connectClient`, on every connect and reconnect, and in `auth`; only in `env`, `headers` and `oauth.clientSecret` (never `command`/`args`: argv is visible in `ps`). Errors name the command and exit code, never its output
 - Grants are a guardrail, not a security boundary: the daemon trusts the claimed `X-Tools-Grants`. Grant globs are literal (`nonegate`, `nocomment`); empty lists/patterns are rejected at load
 - A loopback-bound daemon answers only requests whose `Host` is a loopback name (DNS rebinding guard); the host comes from `--host`/`UNIMCP_HOST` only, never the generic `HOST`
+
 ### OAuth servers
 
 - An HTTP/SSE server with `"auth": "oauth"` or an `oauth` block (`clientId`, `clientSecret`, `scopes`, `callbackPort`; default port 4849) gets a `FileOAuthProvider`. A `url` without `type` is HTTP.
