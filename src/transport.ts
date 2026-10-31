@@ -21,6 +21,8 @@ export function buildTransport(name: string, srv: ServerConfig): Transport {
     command: srv.command,
     args: srv.args ?? [],
     env: { ...process.env, ...srv.env } as Record<string, string>,
+    // Piped, not inherited, so stdio.ts can keep its last lines for the error when it dies on start.
+    stderr: "pipe",
   });
 }
 

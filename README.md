@@ -88,7 +88,7 @@ flowchart LR
 | `UNIMCP_INCLUDE` | Comma-separated globs; only matching tools are visible |
 | `UNIMCP_EXCLUDE` | Comma-separated globs; matching tools are hidden |
 | `UNIMCP_GRANTS` | Comma-separated grants this client holds |
-| `UNIMCP_GRANTS_FILE` | File of grants, one per line; changes apply mid-session |
+| `UNIMCP_GRANTS_FILE` | File of grants, one per line; changes apply mid-session. `{ppid}` becomes the client's pid, for a file per client process |
 
 ### Per-client tool control
 
@@ -165,10 +165,13 @@ A pre-registered client must allow the redirect URL `http://localhost:<callbackP
 ## Commands
 
 ```
-unimcp                     Stdio bridge (starts the daemon if needed)
+unimcp                     Stdio bridge (starts the daemon if needed); in a terminal, same as `status`
 unimcp --http              Run the HTTP daemon directly
 unimcp status              Running daemons and their tools
-unimcp stop|restart [id]   Stop the current context's daemon, an ID prefix, or --all
+unimcp stop <id>           Stop the daemon whose ID starts with <id>
+unimcp shutdown            Stop every running daemon
+unimcp restart [id]        Stop the current context's daemon, an ID prefix, or --all; the next client respawns it
+unimcp completion          Print the zsh completion script (`install-bin` installs it)
 unimcp auth <name>         Authorize an OAuth server
 unimcp setup               Register unimcp in client configs
 unimcp collect [--save]    Merge MCP configs from all clients

@@ -2,12 +2,20 @@ import { describe, test, expect } from "bun:test";
 import { writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { heldGrants, lockedPatterns, lockingGrant } from "../src/grants.js";
+import { grantsFilePath, heldGrants, lockedPatterns, lockingGrant } from "../src/grants.js";
 import { loadConfig, loadRawConfig } from "../src/config.js";
 import { Aggregator } from "../src/aggregator.js";
 
 const dir = join(tmpdir(), `unimcp-grants-${Date.now()}`);
 mkdirSync(dir, { recursive: true });
+
+describe("grantsFilePath", () => {
+  test("replaces {ppid} with the client's pid", () => {
+    expect(grantsFilePath("/g/pid/{ppid}", 42)).toBe("/g/pid/42");
+    expect(grantsFilePath("/g/fixed", 42)).toBe("/g/fixed");
+    expect(grantsFilePath(undefined, 42)).toBeUndefined();
+  });
+});
 
 describe("heldGrants", () => {
   test("merges the env list with the file's lines", () => {

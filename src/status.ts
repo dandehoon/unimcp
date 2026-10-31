@@ -109,10 +109,14 @@ function printUpstreams(upstreams: UpstreamStatus[]): void {
     log(`  ${stateIcon} ${u.name}  ${toolInfo}  ${connInfo}`);
 
     if (u.state === "failed" || u.state === "reconnecting") {
-      const detail = u.lastError ? `${u.lastError}` : "";
+      if (!u.lastError) continue;
+      // A stdio upstream's error carries its stderr lines: time and retries stay on the error line,
+      // the rest go indented under it.
+      const [head, ...rest] = u.lastError.split("\n");
       const when = u.lastErrorAt ? ` (${formatTimestamp(u.lastErrorAt)})` : "";
       const retries = u.reconnectAttempts > 0 ? `  retries: ${u.reconnectAttempts}` : "";
-      if (detail) log(`    error: ${detail}${when}${retries}`);
+      log(`    error: ${head}${when}${retries}`);
+      for (const line of rest) log(`      ${line}`);
     }
   }
 }
@@ -124,6 +128,7 @@ function stateSymbol(state: UpstreamStatus["state"]): string {
     case "reconnecting": return "~";
     case "disconnected": return "-";
     case "idle": return ".";
+    case "starting": return "…";
   }
 }
 

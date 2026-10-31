@@ -6,19 +6,25 @@ import { GLOB_OPTS, lockedPatterns, lockingGrant } from "./grants.js";
 import { PROFILE_ARG, type ProfileGroup, expandProfiles, routeProfile, takesProfileArg, withProfileArg, withoutPinnedArgs } from "./profiles.js";
 import { AuthRequiredError } from "./oauth.js";
 import { substituteCommands } from "./substitute.js";
+import { type Connected, StillStarting, connectStdio, withDetail } from "./stdio.js";
 import { buildSSETransport, buildTransport, isAuthError, isTransportError, withTimeout } from "./transport.js";
 import { log, VERSION } from "./utils.js";
 
 export const SEP = "__";
 const CLIENT_NAME = "unimcp";
 const CONNECT_TIMEOUT_MS = 30_000;
+/** How long a `starting` local server may run before it counts as hung; a cold npx install can take minutes. */
+const START_GIVE_UP_MS = 10 * 60_000;
 const CALL_TIMEOUT_MS = 60_000;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CAP_MS = 30_000;
 
-/** `idle`: a profile member not yet used — it connects on its first call. */
-export type UpstreamState = "connected" | "failed" | "reconnecting" | "disconnected" | "idle";
+/**
+ * `idle`: a profile member not yet used — it connects on its first call.
+ * `starting`: a local server still running past the connect deadline, left to finish (see connectStdio).
+ */
+export type UpstreamState = "connected" | "failed" | "reconnecting" | "disconnected" | "idle" | "starting";
 
 export type UpstreamStatus = {
   name: string;
@@ -75,9 +81,17 @@ export class Aggregator {
   private groups = new Map<string, ProfileGroup>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private pendingReconnects = new Map<string, Promise<void>>();
+  private expandedValues: string[] = [];
+
+  /**
+   * `startDeadlineMs`: how long a connect waits on a local server before leaving it `starting`.
+   * `startGiveUpMs`: how long it may stay `starting` before it counts as hung and is stopped.
+   */
+  constructor(private readonly opts: { startDeadlineMs?: number; startGiveUpMs?: number } = {}) {}
 
   async connect(config: Config): Promise<void> {
     this.grants = config.grants ?? {};
+    this.expandedValues = config.expandedValues ?? [];
     const entries = Object.entries(config.mcpServers).filter(([name, srv]) => srv.enabled !== false && isValidName(name, config.profiles));
     for (const server of Object.keys(config.profiles ?? {})) {
       if (!config.mcpServers[server]) log(`[grants] profiles for unknown server '${server}' — ignored`);
@@ -100,29 +114,79 @@ export class Aggregator {
     this.groups.set(name, expanded.group);
     for (const m of expanded.members) this.upstreams.set(m.name, { ...blankEntry(m.name, m.srv, "idle"), group: name });
     // Down the list until one connects: a failing profile must not leave the group with no tools to list.
+    // A starting one stops the walk too: the next member runs the same command, and a second npx
+    // install into the same cache dir is what corrupts it.
     for (const m of expanded.members) {
       await this.connectOne(m.name, m.srv, name);
-      if (this.upstreams.get(m.name)?.state === "connected") return;
+      const state = this.upstreams.get(m.name)?.state;
+      if (state === "connected" || state === "starting") return;
     }
   }
 
   private async connectOne(name: string, srv: ServerConfig, group?: string): Promise<void> {
+    const entry: UpstreamEntry = { ...blankEntry(name, srv, "idle"), group };
+    this.upstreams.set(name, entry);
     try {
-      const result = await this.connectClient(name, srv);
-      const filtered = result.tools.filter((t) => matchesFilter(t.name, serverFilter(srv)));
-      this.upstreams.set(name, {
-        name, client: result.client, tools: filtered, config: srv,
-        state: "connected", connectedAt: Date.now(),
-        lastError: null, lastErrorAt: null, reconnectAttempts: 0, group,
-      });
-      this.setupErrorHandler(name, result.client);
-      log(`[${name}] connected (${filtered.length} tools)`);
+      this.adopt(entry, await this.connectClient(name, srv));
+      log(`[${name}] connected (${entry.tools.length} tools)`);
     } catch (err) {
+      if (err instanceof StillStarting) return this.awaitStart(entry, err);
       log(`[${name}] failed to connect:`, err);
-      this.upstreams.set(name, { ...blankEntry(name, srv, "failed"), lastError: String(err), lastErrorAt: Date.now(), group });
+      entry.state = "failed";
+      entry.lastError = String(err);
+      entry.lastErrorAt = Date.now();
       // Retrying can't help until the user authorizes; retryIfDown picks up their new tokens.
       if (!(err instanceof AuthRequiredError)) this.scheduleReconnect(name);
     }
+  }
+
+  private adopt(entry: UpstreamEntry, result: Connected): void {
+    entry.client = result.client;
+    entry.tools = result.tools.filter((t) => matchesFilter(t.name, serverFilter(entry.config)));
+    entry.state = "connected";
+    entry.connectedAt = Date.now();
+    entry.reconnectAttempts = 0;
+    this.invalidateCache();
+    this.setupErrorHandler(entry.name, result.client);
+  }
+
+  /**
+   * Leaves a slow local server running and takes it on when it answers. Registered as the entry's
+   * in-flight attempt, so a call or retry waits on it instead of spawning a second copy.
+   */
+  private awaitStart(entry: UpstreamEntry, starting: StillStarting): void {
+    const { name } = entry;
+    const giveUpMs = this.opts.startGiveUpMs ?? START_GIVE_UP_MS;
+    log(`[${name}] still starting after ${(this.opts.startDeadlineMs ?? CONNECT_TIMEOUT_MS) / 1_000} s — waiting for it`);
+    entry.state = "starting";
+    entry.client = starting.client; // so disconnect() stops it
+    // A hung server would otherwise hold its process, and the daemon's idle shutdown, forever.
+    let gaveUp = false;
+    const giveUp = setTimeout(() => {
+      gaveUp = true;
+      void starting.client.close().catch(() => {});
+    }, giveUpMs);
+    const adoption = starting.ready.then(
+      (result) => {
+        this.adopt(entry, result);
+        log(`[${name}] connected after a slow start (${entry.tools.length} tools)`);
+      },
+      (err) => {
+        // disconnect() closed it on reload or shutdown: this aggregator is done with it.
+        if (entry.state === "disconnected") return;
+        // Prefixed, not replaced: err carries the server's last stderr lines.
+        const reason = gaveUp ? withDetail(`still starting after ${giveUpMs / 1_000} s — stopped`, `: ${err instanceof Error ? err.message : String(err)}`) : err;
+        log(`[${name}] exited while starting:`, reason);
+        entry.state = "failed";
+        entry.lastError = String(reason);
+        entry.lastErrorAt = Date.now();
+        this.scheduleReconnect(name);
+      },
+    ).finally(() => {
+      clearTimeout(giveUp);
+      if (this.pendingReconnects.get(name) === adoption) this.pendingReconnects.delete(name);
+    });
+    this.pendingReconnects.set(name, adoption);
   }
 
   private setupErrorHandler(name: string, client: Client): void {
@@ -135,7 +199,7 @@ export class Aggregator {
 
   private scheduleReconnect(name: string): void {
     const entry = this.upstreams.get(name);
-    if (!entry || entry.state === "reconnecting" || entry.state === "disconnected") return;
+    if (!entry || entry.state === "reconnecting" || entry.state === "disconnected" || entry.state === "starting") return;
     if (entry.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       entry.state = "failed";
       return;
@@ -153,17 +217,10 @@ export class Aggregator {
     if (!entry || entry.state === "disconnected") return;
 
     try {
-      const result = await this.connectClient(name, entry.config);
-      const filtered = result.tools.filter((t) => matchesFilter(t.name, serverFilter(entry.config)));
-      entry.client = result.client;
-      entry.tools = filtered;
-      entry.state = "connected";
-      entry.connectedAt = Date.now();
-      entry.reconnectAttempts = 0;
-      this.invalidateCache();
-      this.setupErrorHandler(name, result.client);
-      log(`[${name}] reconnected (${filtered.length} tools)`);
+      this.adopt(entry, await this.connectClient(name, entry.config));
+      log(`[${name}] reconnected (${entry.tools.length} tools)`);
     } catch (err) {
+      if (err instanceof StillStarting) return this.awaitStart(entry, err);
       entry.lastError = String(err);
       entry.lastErrorAt = Date.now();
       if (entry.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS || err instanceof AuthRequiredError) {
@@ -279,7 +336,14 @@ export class Aggregator {
 
     const upstream = this.upstreams.get(upstreamName);
     if (!upstream || (upstream.group && !group)) throw new Error(`Unknown upstream: ${upstreamName}`);
+    // Fail fast rather than hold the call for a minutes-long first install, or start a sibling
+    // profile alongside it — starting, or still connecting toward it: both run the same command
+    // into the same install dir.
     if (upstream.state !== "connected") {
+      const busy = [...this.upstreams.values()].find((e) => e === upstream
+        ? e.state === "starting"
+        : group && e.group === group.name && "command" in e.config && (e.state === "starting" || this.pendingReconnects.has(e.name)));
+      if (busy) throw new Error(`Upstream ${busy.name} is still starting (first install?) — retry shortly`);
       await this.onDemandReconnect(upstreamName, upstream);
       if ((upstream as UpstreamEntry).state !== "connected") {
         throw new Error(`Upstream ${upstreamName} is ${upstream.state} (reconnect failed)`);
@@ -311,8 +375,14 @@ export class Aggregator {
     }));
   }
 
+  /** Settles once no upstream is `starting`: each has connected, failed, or been given up on. */
+  async whenStarted(): Promise<void> {
+    const starting = [...this.upstreams.values()].filter((e) => e.state === "starting");
+    await Promise.allSettled(starting.map((e) => this.pendingReconnects.get(e.name)));
+  }
+
   isReconnecting(): boolean {
-    return [...this.upstreams.values()].some((e) => e.state === "reconnecting");
+    return [...this.upstreams.values()].some((e) => e.state === "reconnecting" || e.state === "starting");
   }
 
   /** Reconnects a failed server now, e.g. once its OAuth tokens arrive. */
@@ -331,7 +401,10 @@ export class Aggregator {
   private track(name: string, run: () => Promise<void>): Promise<void> {
     const inFlight = this.pendingReconnects.get(name);
     if (inFlight) return inFlight;
-    const attempt = run().finally(() => this.pendingReconnects.delete(name));
+    // Only its own slot: an attempt that ends in awaitStart has already put the adoption there.
+    const attempt: Promise<void> = run().finally(() => {
+      if (this.pendingReconnects.get(name) === attempt) this.pendingReconnects.delete(name);
+    });
     this.pendingReconnects.set(name, attempt);
     return attempt;
   }
@@ -342,17 +415,10 @@ export class Aggregator {
 
     entry.reconnectAttempts = 0;
     try {
-      const result = await this.connectClient(name, entry.config);
-      const filtered = result.tools.filter((t) => matchesFilter(t.name, serverFilter(entry.config)));
-      entry.client = result.client;
-      entry.tools = filtered;
-      entry.state = "connected";
-      entry.connectedAt = Date.now();
-      entry.reconnectAttempts = 0;
-      this.invalidateCache();
-      this.setupErrorHandler(name, result.client);
-      log(`[${name}] on-demand reconnect succeeded (${filtered.length} tools)`);
+      this.adopt(entry, await this.connectClient(name, entry.config));
+      log(`[${name}] on-demand reconnect succeeded (${entry.tools.length} tools)`);
     } catch (err) {
+      if (err instanceof StillStarting) return this.awaitStart(entry, err);
       entry.lastError = String(err);
       entry.lastErrorAt = Date.now();
       entry.state = "failed";
@@ -360,8 +426,13 @@ export class Aggregator {
     }
   }
 
-  private async connectClient(name: string, rawSrv: ServerConfig): Promise<{ client: Client; tools: Tool[] }> {
+  private async connectClient(name: string, rawSrv: ServerConfig): Promise<Connected> {
     const srv = await substituteCommands(rawSrv);
+    if ("command" in srv) {
+      const client = new Client({ name: CLIENT_NAME, version: VERSION });
+      const secrets = [...Object.values(srv.env ?? {}), ...this.expandedValues];
+      return connectStdio({ name, srv, client, deadlineMs: this.opts.startDeadlineMs ?? CONNECT_TIMEOUT_MS, secrets });
+    }
     const client = new Client({ name: CLIENT_NAME, version: VERSION });
     const transport = buildTransport(name, srv);
     try {
@@ -370,9 +441,7 @@ export class Aggregator {
       return { client, tools };
     } catch (err) {
       try { await client.close(); } catch { /* ignore */ }
-      if (isHttpServer(srv) && !isAuthError(err)) {
-        return this.connectViaSSE(name, srv);
-      }
+      if (isHttpServer(srv) && !isAuthError(err)) return this.connectViaSSE(name, srv);
       throw err;
     }
   }

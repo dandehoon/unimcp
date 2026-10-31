@@ -1,6 +1,6 @@
 import { existsSync } from "fs";
 import path from "path";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { startManagedServer } from "./server.js";
 import { ensureDaemon } from "./daemon.js";
 import { runBridge } from "./bridge.js";
@@ -9,6 +9,7 @@ import { runCollect } from "./collect.js";
 import { resolveMcpFile, computeEnvHash } from "./config.js";
 import { runStatus } from "./status.js";
 import { runStop } from "./stop.js";
+import { zshCompletion } from "./completion.js";
 import { runAuth } from "./auth.js";
 import { cmdList, cmdGet, cmdAdd, cmdAddJson, cmdRemove } from "./mcp.js";
 import type { AddOpts } from "./mcp.js";
@@ -25,7 +26,7 @@ program
   .name("unimcp")
   .description("MCP aggregator — merges upstream MCP servers into one endpoint")
   .option("--mcp-file <path>", "Config file path")
-  .option("--env-hash <hash>", "Env hash override (internal)")
+  .addOption(new Option("--env-hash <hash>", "Env hash override (internal)").hideHelp())
   .option("--http", "Start as managed HTTP server")
   .option("--daemon", "Alias for --http")
   .option("--port <number>", "Port for the HTTP server (default: UNIMCP_PORT env or 4848)")
@@ -38,6 +39,13 @@ program
 
     if (opts.http ?? opts.daemon) {
       await startManagedServer({ port, host, configPath, envHash });
+      return;
+    }
+
+    // An MCP client always speaks over pipes, so a terminal on stdin means a person ran it: show
+    // the status instead of starting a bridge that would sit waiting for JSON-RPC.
+    if (process.stdin.isTTY) {
+      await runStatus({ envHash, host, configPath });
       return;
     }
 
@@ -148,14 +156,17 @@ function resolveEnvHash(flagHash: string | undefined, configPath: string): strin
 }
 
 program
-  .command("stop [id]")
-  .description("Stop daemon(s) — by ID prefix, current context, or all")
-  .option("--all", "Stop all running daemons")
-  .action((id: string | undefined, opts: { all?: boolean }, cmd) => {
-    const g = globalOpts(cmd);
-    const configPath = resolveConfigPath(g.mcpFile);
-    const envHash = resolveEnvHash(g.envHash, configPath);
-    runStop({ envHash, id, all: opts.all });
+  .command("stop <id>")
+  .description("Stop the daemon whose ID starts with <id> (see `status`)")
+  .action((id: string) => {
+    runStop({ id });
+  });
+
+program
+  .command("shutdown")
+  .description("Stop every running daemon")
+  .action(() => {
+    runStop({ all: true });
   });
 
 program
@@ -169,6 +180,13 @@ program
     const stopped = runStop({ envHash, id, all: opts.all });
     if (stopped > 0) log("[restart] daemon(s) stopped — will respawn on next client connection");
     else log("[restart] no running daemons to restart");
+  });
+
+program
+  .command("completion")
+  .description("Print the zsh completion script")
+  .action(() => {
+    process.stdout.write(zshCompletion(program));
   });
 
 program.parseAsync(process.argv).catch((err) => {

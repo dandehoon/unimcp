@@ -209,6 +209,9 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     isReloading = true;
     log("[server] config changed — reloading");
     try {
+      // The new aggregator would start a second copy of a still-starting server into the same
+      // install dir. The wait is bounded by the give-up; the build then reads the latest file.
+      await aggregator?.whenStarted();
       const next = await buildAggregator(opts.configPath);
       // Swap reference first so new requests hit the fresh aggregator immediately,
       // then tear down the old one (eliminates race window and simultaneous live connections).

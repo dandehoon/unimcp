@@ -20,6 +20,14 @@ export function heldGrants(envList: string | undefined, file: string | undefined
   return held;
 }
 
+/**
+ * The grants file path with `{ppid}` replaced by the client's pid (the bridge's parent), so
+ * one config entry gives each client process its own file.
+ */
+export function grantsFilePath(raw: string | undefined, ppid = process.ppid): string | undefined {
+  return raw?.replaceAll("{ppid}", String(ppid));
+}
+
 /** `server__tool` globs of every grant not held — hidden until granted. Argument rules hide nothing. */
 export function lockedPatterns(grants: Record<string, GrantRule[]> | undefined, held: Set<string>): string[] {
   return Object.entries(grants ?? {}).flatMap(([name, rules]) =>
