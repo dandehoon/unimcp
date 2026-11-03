@@ -90,7 +90,7 @@ Grants are a guardrail, not a security boundary: any local process can claim any
 
 ### OAuth
 
-Mark a remote server `"auth": "oauth"`, then sign in once with `unimcp auth <name>`. Tokens live owner-only under `~/.config/unimcp/oauth/` and refresh automatically. A server without dynamic client registration needs `"oauth": { "clientId", "clientSecret", "scopes", "callbackPort" }`, with `http://localhost:<callbackPort>/callback` (default 4849) allowed as its redirect URL.
+Mark a remote server `"auth": "oauth"`, then sign in once with `unimcp auth <name>`. Tokens live owner-only under `~/.config/unimcp/oauth/` and refresh automatically. A server without dynamic client registration needs `"oauth": { "clientId", "clientSecret", "scopes", "callbackPort" }`, with `http://localhost:<callbackPort>/callback` (default 4849) allowed as its redirect URL. Over SSH, on Linux with no display, or with `--no-browser`, it prints the URL instead of opening a browser (`--browser` forces it open): approve anywhere, then paste into the terminal the address the browser was redirected to — the page itself won't load.
 
 ## Commands
 

@@ -22,6 +22,7 @@ src/
   substitute.ts   # `$(command)` substitution in env/headers/oauth.clientSecret, run as an upstream connects
   oauth.ts        # File-backed OAuthClientProvider (~/.config/unimcp/oauth/<name>.<urlHash>.json), AuthRequiredError
   auth.ts         # `auth <name>` command — browser OAuth flow with a localhost callback
+  auth-callback.ts # Waits for the OAuth redirect: localhost listener, or the redirect URL pasted on stdin
   setup.ts        # `setup` command — register unimcp in client configs
   collect.ts      # `collect` command — read MCP configs from all clients, merge, output
   status.ts       # `status` command — list running daemons + loaded tools
@@ -287,7 +288,7 @@ PROFILE_ARG      = "profile"                            (profiles.ts)
 ### OAuth servers
 
 - An HTTP/SSE server with `"auth": "oauth"` or an `oauth` block (`clientId`, `clientSecret`, `scopes`, `callbackPort`; default port 4849) gets a `FileOAuthProvider`. A `url` without `type` is HTTP.
-- `unimcp auth <name>` runs the browser flow and writes tokens; the daemon is headless — without tokens it fails with `AuthRequiredError` (no retry loop) and connects when it sees the token file change (`retryIfDown`). Refresh is the SDK's, on 401.
+- `unimcp auth <name>` runs the browser flow and writes tokens (over SSH, on Linux with no display, or with `--no-browser` it prints the URL, `--browser` forces it open; on a TTY stdin the redirect URL may be pasted either way); the daemon is headless — without tokens it fails with `AuthRequiredError` (no retry loop) and connects when it sees the token file change (`retryIfDown`). Refresh is the SDK's, on 401.
 - No `clientId` → dynamic client registration; servers without DCR (e.g. Slack) need `clientId`/`clientSecret`.
 
 ### Per-server fields
