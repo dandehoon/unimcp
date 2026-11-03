@@ -24,6 +24,7 @@ src/
   auth.ts         # `auth <name>` command — browser OAuth flow with a localhost callback
   auth-callback.ts # Waits for the OAuth redirect: localhost listener, or the redirect URL pasted on stdin
   setup.ts        # `setup` command — register unimcp in client configs
+  setup-inject.ts # Per-client entry writers (JSONC sections, Codex TOML table); never overwrite a file that fails to parse
   collect.ts      # `collect` command — read MCP configs from all clients, merge, output
   status.ts       # `status` command — list running daemons + loaded tools
   stop.ts         # `stop <id>` (ID prefix), `shutdown` (all), `restart` (ID prefix, current context, or --all)
@@ -300,33 +301,39 @@ PROFILE_ARG      = "profile"                            (profiles.ts)
 
 ## Collect command
 
-`unimcp collect` merges MCP configs from installed editors into `{ "mcpServers": … }`: stdout, `-o <file>`, or `--save` (to the resolved config file, replacing only `mcpServers`). Sources, last-write-wins:
+`unimcp collect` merges MCP configs from installed editors into `{ "mcpServers": … }`: stdout, `-o <file>`, or `--save` (to the resolved config file, replacing only `mcpServers`). Files are read as JSONC (comments, trailing commas); an entry named `unimcp` is dropped. Sources, last-write-wins:
 1. Claude Code user (`~/.claude.json` → `mcpServers`)
 2. `.mcp.json` in cwd (`mcpServers`)
 3. Cursor global (`~/.cursor/mcp.json` → `mcpServers`)
 4. VS Code / Copilot global (`~/Library/.../Code/User/mcp.json` → `servers`, remapped)
-5. OpenCode global (`~/.config/opencode/opencode.json` → `mcp`, remapped, enabled only)
+5. OpenCode global (`~/.config/opencode/opencode.json[c]` → `mcp.servers`, and the older `mcp.<name>`; remapped, disabled skipped)
+6. Antigravity global (`~/.gemini/config/mcp_config.json` → `mcpServers`, `serverUrl` → `url`, disabled skipped)
+
+Codex (`config.toml`) is not collected — it would need a TOML parser.
 
 ---
 
 ## Setup / registration
 
-`unimcp setup` (or `pnpm register`) registers the binary in editor configs:
+`unimcp setup` (or `pnpm register`) registers the binary in editor configs — `/usr/local/bin/unimcp` if installed, else the running binary, or runtime + script under node/bun:
 
-**Local mode (default):** writes to `.mcp.json` (claude), `.cursor/mcp.json` (cursor), `.vscode/mcp.json` (copilot) in the current directory. Always creates/updates.
+**Local mode (default):** writes the local path of every target that has one (table below) in the current directory. Always creates/updates.
 
 **Global mode (`--global`):** writes to user-level config files. Only updates if the config file already exists. Use `--target` to force-create.
 
 | Target            | Local path (cwd)    | Global path                                      | Key          | Type value         |
 | ----------------- | ------------------- | ------------------------------------------------ | ------------ | ------------------ |
-| `claude`          | `.mcp.json`         | `~/.claude.json`                                 | `mcpServers` | _(implicit stdio)_ |
-| `cursor`          | `.cursor/mcp.json`  | `~/.cursor/mcp.json`                             | `mcpServers` | _(implicit stdio)_ |
+| `claude`          | `.mcp.json`         | `~/.claude.json`                                 | `mcpServers` | `"stdio"`          |
+| `cursor`          | `.cursor/mcp.json`  | `~/.cursor/mcp.json`                             | `mcpServers` | `"stdio"`          |
 | `copilot`         | `.vscode/mcp.json`  | `~/Library/.../Code/User/mcp.json`               | `servers`    | `"stdio"`          |
-| `opencode`        | _(none)_            | `~/.config/opencode/opencode.json`               | `mcp`        | `"local"`          |
+| `opencode`        | _(none)_            | `~/.config/opencode/opencode.json[c]`            | `mcp.servers` | `"local"`         |
+| `codex`           | `.codex/config.toml` | `~/.codex/config.toml`                          | `[mcp_servers.unimcp]` | _(none)_  |
+| `antigravity`     | `.agents/mcp_config.json` | `~/.gemini/config/mcp_config.json`         | `mcpServers` | _(none)_           |
 
-- **Dedup**: skips a target if `"unimcp"` key already exists
+- **Dedup**: skips a target if `"unimcp"` key already exists (OpenCode: either shape)
+- A JSON file that fails to parse is skipped and left untouched; a JSONC file that is rewritten loses its comments
 - **`--global --target=claude,copilot`**: force-write global even if file doesn't exist
-- OpenCode has no project-level equivalent (global only)
+- OpenCode is global only here; a Codex project config applies only to trusted projects
 
 ---
 

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { stripJsonComments } from "../src/utils.js";
+import { parseJsonc, stripJsonComments } from "../src/utils.js";
 
 describe("stripJsonComments", () => {
   test("passes plain JSON through unchanged", () => {
@@ -43,5 +43,19 @@ describe("stripJsonComments", () => {
 
   test("returns empty string unchanged", () => {
     expect(stripJsonComments("")).toBe("");
+  });
+});
+
+describe("parseJsonc", () => {
+  test("drops trailing commas and comments", () => {
+    expect(parseJsonc('{ "a": [1, 2,], // c\n "b": { "c": 1, }, }')).toEqual({ a: [1, 2], b: { c: 1 } });
+  });
+
+  test("keeps commas inside strings", () => {
+    expect(parseJsonc('{ "a": ",}", "b": "x\\\\", "c": "\\",]",}')).toEqual({ a: ",}", b: "x\\", c: '",]' });
+  });
+
+  test("throws on invalid JSON", () => {
+    expect(() => parseJsonc("{ a: 1 }")).toThrow();
   });
 });

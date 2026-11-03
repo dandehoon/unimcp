@@ -4,7 +4,7 @@ import { Command, Option } from "commander";
 import { startManagedServer } from "./server.js";
 import { ensureDaemon } from "./daemon.js";
 import { runBridge } from "./bridge.js";
-import { runSetup } from "./setup.js";
+import { runSetup, TARGETS } from "./setup.js";
 import { runCollect } from "./collect.js";
 import { resolveMcpFile, computeEnvHash } from "./config.js";
 import { runStatus } from "./status.js";
@@ -68,7 +68,7 @@ program
   .command("setup")
   .description("Register unimcp in client editor configs")
   .option("--global", "Write to user-level config files")
-  .option("--target <ids>", "Comma-separated targets: claude,cursor,copilot,opencode", splitCommaSeparated)
+  .option("--target <ids>", `Comma-separated targets: ${TARGETS.map((t) => t.id).join(",")}`, splitCommaSeparated)
   .action(async (opts: { global?: boolean; target?: string[] }) => {
     await runSetup({ isGlobal: opts.global ?? false, targets: opts.target ?? null });
   });

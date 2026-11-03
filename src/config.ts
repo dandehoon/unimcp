@@ -1,9 +1,9 @@
 import { createHash } from "crypto";
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import path from "path";
 import os from "os";
 import { PROFILE_RE } from "./profiles.js";
-import { log, stripJsonComments, VERSION } from "./utils.js";
+import { isPlainObject, log, stripJsonComments, VERSION } from "./utils.js";
 
 const MAX_CONFIG_BYTES = 1_048_576; // 1 MB
 
@@ -18,7 +18,15 @@ const HOME = os.homedir();
 export const VSCODE_MCP_PATH = path.join(HOME, "Library", "Application Support", "Code", "User", "mcp.json");
 export const CURSOR_GLOBAL_PATH = path.join(HOME, ".cursor", "mcp.json");
 export const CLAUDE_GLOBAL_PATH = path.join(HOME, ".claude.json");
-export const OPENCODE_PATH = path.join(HOME, ".config", "opencode", "opencode.json");
+const OPENCODE_DIR = path.join(HOME, ".config", "opencode");
+export const CODEX_GLOBAL_PATH = path.join(HOME, ".codex", "config.toml");
+export const ANTIGRAVITY_GLOBAL_PATH = path.join(HOME, ".gemini", "config", "mcp_config.json");
+
+/** OpenCode reads `opencode.jsonc` or `opencode.json`; the one that exists, else `.json`. */
+export function openCodeGlobalPath(): string {
+  const jsonc = path.join(OPENCODE_DIR, "opencode.jsonc");
+  return existsSync(jsonc) ? jsonc : path.join(OPENCODE_DIR, "opencode.json");
+}
 
 const ENV_VAR_RE = /\$\{(\w+)\}/g;
 
@@ -168,10 +176,6 @@ function isGrantRule(rule: unknown): boolean {
   if (!isPlainObject(rule) || !isGlob(rule.tool) || !isPlainObject(rule.args)) return false;
   const values = Object.values(rule.args);
   return values.length > 0 && values.every((v) => typeof v === "string");
-}
-
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 /** Loads the config with `${VAR}` expanded, dropping servers whose references are unset. */
