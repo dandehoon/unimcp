@@ -20,6 +20,10 @@ describe("parseCallback", () => {
     expect(parseCallback(redirect(`error=access%20denied&state=${STATE}`), STATE))
       .toEqual({ error: "authorization denied: access?denied" });
   });
+
+  test("our state with no code is a denial", () => {
+    expect(parseCallback(redirect(`state=${STATE}`), STATE)).toEqual({ error: "authorization denied: no code" });
+  });
 });
 
 describe("listenForCallback paste", () => {
@@ -55,6 +59,7 @@ describe("hasLocalBrowser", () => {
   test("Linux needs a display", () => {
     expect(hasLocalBrowser({}, "linux")).toBe(false);
     expect(hasLocalBrowser({ WAYLAND_DISPLAY: "wayland-0" }, "linux")).toBe(true);
+    expect(hasLocalBrowser({ DISPLAY: ":0" }, "linux")).toBe(true);
     expect(hasLocalBrowser({}, "darwin")).toBe(true);
   });
 });

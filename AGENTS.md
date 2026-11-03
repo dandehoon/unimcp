@@ -288,7 +288,7 @@ PROFILE_ARG      = "profile"                            (profiles.ts)
 ### OAuth servers
 
 - An HTTP/SSE server with `"auth": "oauth"` or an `oauth` block (`clientId`, `clientSecret`, `scopes`, `callbackPort`; default port 4849) gets a `FileOAuthProvider`. A `url` without `type` is HTTP.
-- `unimcp auth <name>` runs the browser flow and writes tokens (over SSH or with `--no-browser` it prints the URL; the redirect URL may be pasted on a TTY stdin either way); the daemon is headless — without tokens it fails with `AuthRequiredError` (no retry loop) and connects when it sees the token file change (`retryIfDown`). Refresh is the SDK's, on 401.
+- `unimcp auth <name>` runs the browser flow and writes tokens (over SSH, on Linux with no display, or with `--no-browser` it prints the URL, `--browser` forces it open; on a TTY stdin the redirect URL may be pasted either way); the daemon is headless — without tokens it fails with `AuthRequiredError` (no retry loop) and connects when it sees the token file change (`retryIfDown`). Refresh is the SDK's, on 401.
 - No `clientId` → dynamic client registration; servers without DCR (e.g. Slack) need `clientId`/`clientSecret`.
 
 ### Per-server fields

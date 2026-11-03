@@ -10,8 +10,8 @@ import { log } from "./utils.js";
 export type AuthOptions = {
   name: string;
   configPath: string;
-  /** Print the URL instead of opening a browser; default: open unless this looks like a remote shell. */
-  openBrowser?: boolean;
+  /** Open a browser (true) or print the URL (false); default: open unless this looks like a remote shell. */
+  useBrowser?: boolean;
 };
 
 /** `unimcp auth <name>` — runs the browser OAuth flow and stores tokens for the daemon to use. */
@@ -22,14 +22,17 @@ export async function runAuth(opts: AuthOptions): Promise<void> {
   const srv = await substituteCommands(found);
   if (!isOAuthServer(srv)) throw new Error(`Server '${name}' is not configured with "auth": "oauth"`);
 
-  const isBrowser = opts.openBrowser ?? hasLocalBrowser(process.env);
+  const useBrowser = opts.useBrowser ?? hasLocalBrowser(process.env);
+  const paste = process.stdin.isTTY ? process.stdin : undefined;
+  const hint = paste ? PASTE_HINT : NO_PASTE_HINT;
+  const onRedirect = (url: URL) => (useBrowser ? openBrowser(url, hint) : printUrl(url, hint));
   // Existing tokens stay on disk, serving running daemons, until this run replaces them.
-  const provider = new FileOAuthProvider({ name, srv, onRedirect: isBrowser ? openBrowser : printUrl, isReauth: true });
+  const provider = new FileOAuthProvider({ name, srv, onRedirect, isReauth: true });
   const callback = await listenForCallback({
     redirectUrl: provider.redirectUrl,
     callbackPort: provider.callbackPort,
     expectedState: provider.expectedState,
-    paste: process.stdin.isTTY ? process.stdin : undefined,
+    paste,
   });
   let isDone = false;
   try {
@@ -53,11 +56,12 @@ export function hasLocalBrowser(env: NodeJS.ProcessEnv, platform = process.platf
 // --- helpers ---
 
 const PASTE_HINT = "if the browser is on another machine, its redirect to localhost won't load — paste that page's full URL here";
+const NO_PASTE_HINT = "stdin isn't a terminal, so the redirect must reach this machine's localhost (e.g. `ssh -t`, or forward the callback port)";
 
 /** The URL comes from the server's metadata — untrusted: open only https, never a file or app scheme. */
-function openBrowser(url: URL): void {
+function openBrowser(url: URL, hint: string): void {
   assertHttps(url);
-  log(`[auth] opening browser — if it doesn't open, visit:\n${url.href}\n[auth] ${PASTE_HINT}`);
+  log(`[auth] opening browser — if it doesn't open, visit:\n${url.href}\n[auth] ${hint}`);
   // No shell anywhere: `cmd /c start` would run whatever follows an `&` in the query string.
   const [cmd, args] = process.platform === "darwin" ? ["open", [url.href]]
     : process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url.href]]
@@ -67,9 +71,9 @@ function openBrowser(url: URL): void {
     .unref();
 }
 
-function printUrl(url: URL): void {
+function printUrl(url: URL, hint: string): void {
   assertHttps(url);
-  log(`[auth] open this URL in any browser:\n${url.href}\n[auth] after approving, ${PASTE_HINT}`);
+  log(`[auth] open this URL in any browser:\n${url.href}\n[auth] after approving: ${hint}`);
 }
 
 function assertHttps(url: URL): void {

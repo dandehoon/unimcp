@@ -15,7 +15,8 @@ export type CallbackOptions = {
   paste?: NodeJS.ReadableStream;
 };
 
-export type CallbackResult = { code: string } | { error: string } | null;
+type CallbackOutcome = { code: string } | { error: string };
+export type CallbackResult = CallbackOutcome | null;
 
 /**
  * The authorization code from a redirect URL, or `null` when it isn't our redirect — without our
@@ -26,12 +27,12 @@ export function parseCallback(url: URL, expectedState: string): CallbackResult {
   const error = url.searchParams.get("error");
   const code = url.searchParams.get("code");
   if (code && !error) return { code };
-  return { error: `authorization denied: ${(error ?? "no code").replace(/[^\w.:-]/g, "?")}` };
+  return { error: `authorization denied: ${error ? error.replace(/[^\w.:-]/g, "?") : "no code"}` };
 }
 
 /** Waits for the authorization code on the redirect URL's port, or pasted into `opts.paste`. */
 export async function listenForCallback(opts: CallbackOptions): Promise<Callback> {
-  let settle!: (result: { code: string } | { error: string }) => void;
+  let settle!: (result: CallbackOutcome) => void;
   const code = new Promise<string>((resolve, reject) => {
     settle = (r) => ("code" in r ? resolve(r.code) : reject(new Error(r.error)));
   });
@@ -69,9 +70,16 @@ export async function listenForCallback(opts: CallbackOptions): Promise<Callback
 function readPastedCallback(
   input: NodeJS.ReadableStream,
   expectedState: string,
-  settle: (result: { code: string } | { error: string }) => void,
+  settle: (result: CallbackOutcome) => void,
 ): () => void {
-  const rl = readline.createInterface({ input, terminal: false });
+  // A TTY in canonical mode drops lines past MAX_CANON (~1 KB on macOS) — longer than some redirect
+  // URLs — so read it raw, echoing to stderr, and pass Ctrl+C on as the interrupt raw mode swallows.
+  const isTerminal = (input as NodeJS.ReadStream).isTTY === true;
+  const rl = readline.createInterface({ input, output: process.stderr, terminal: isTerminal });
+  rl.on("SIGINT", () => {
+    rl.close();
+    process.kill(process.pid, "SIGINT");
+  });
   rl.on("line", (line) => {
     const text = line.trim();
     if (!text) return;
