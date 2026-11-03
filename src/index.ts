@@ -130,8 +130,11 @@ program
 program
   .command("auth <name>")
   .description("Authorize an OAuth server in the browser and store its tokens")
-  .action(async (name: string, _opts, cmd) => {
-    await runAuth(name, resolveConfigPath(globalOpts(cmd).mcpFile));
+  .option("--no-browser", "print the URL and accept the pasted redirect instead of opening a browser (default over SSH)")
+  .action(async (name: string, opts: { browser: boolean }, cmd) => {
+    // commander sets `browser: true` unless --no-browser; only an explicit flag overrides detection.
+    const openBrowser = opts.browser ? undefined : false;
+    await runAuth({ name, configPath: resolveConfigPath(globalOpts(cmd).mcpFile), openBrowser });
   });
 
 // --- helpers ---
