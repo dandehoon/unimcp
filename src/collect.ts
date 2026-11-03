@@ -110,7 +110,7 @@ function readJsonFile(filePath: string): Entry | null {
     const parsed = parseJsonc(raw);
     return isPlainObject(parsed) ? parsed : null;
   } catch {
-    log(`warning: could not parse ${filePath}`);
+    log(`[collect] warning: could not parse ${filePath}`);
     return null;
   }
 }
@@ -119,7 +119,12 @@ function readJsonFile(filePath: string): Entry | null {
 function readOwnConfig(filePath: string): Entry {
   const raw = readFileSafe(filePath);
   if (raw === null || raw.trim() === "") return {};
-  const parsed = parseJsonc(raw);
+  let parsed: unknown;
+  try {
+    parsed = parseJsonc(raw);
+  } catch (err) {
+    throw new Error(`${filePath}: ${(err as Error).message}`);
+  }
   if (!isPlainObject(parsed)) throw new Error(`${filePath} is not a JSON object`);
   return parsed;
 }

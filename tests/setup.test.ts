@@ -66,9 +66,9 @@ describe("injectVsCodeServers", () => {
 });
 
 describe("injectOpenCode", () => {
-  test("injects the v2 shape into empty config", () => {
+  test("injects the shape both pre-v2 and v2 load", () => {
     const result = JSON.parse(injectOpenCode("", { command: BIN, args: ["a"] }));
-    expect(result.mcp.servers.unimcp).toEqual({ type: "local", command: [BIN, "a"] });
+    expect(result.mcp.unimcp).toEqual({ type: "local", command: [BIN, "a"], enabled: true });
   });
 
   test("preserves other keys and v2 servers", () => {
@@ -76,7 +76,7 @@ describe("injectOpenCode", () => {
     const result = JSON.parse(injectOpenCode(existing, LAUNCH));
     expect(result.autoupdate).toBe(true);
     expect(result.mcp.servers.other).toBeDefined();
-    expect(result.mcp.servers.unimcp).toBeDefined();
+    expect(result.mcp.unimcp).toBeDefined();
   });
 
   test("dedup: v2 and pre-v2 entries both count as registered", () => {
@@ -106,10 +106,21 @@ describe("injectCodex", () => {
     expect(result.slice(existing.length)).toBe('\n[mcp_servers.unimcp]\ncommand = "C:\\\\a \\"b\\""\nargs = ["x"]\n');
   });
 
-  test("dedup: bare or quoted table name", () => {
-    for (const existing of ['[mcp_servers.unimcp]\ncommand = "x"\n', '[ mcp_servers."unimcp" ]\ncommand = "x"\n']) {
-      expect(injectCodex(existing, LAUNCH)).toBe(existing);
-    }
+  test("dedup: every TOML form of an existing entry", () => {
+    const forms = [
+      '[mcp_servers.unimcp]\ncommand = "x"\n',
+      '[ mcp_servers."unimcp" ]\ncommand = "x"\n',
+      "[mcp_servers.'unimcp']\ncommand = 'x'\n",
+      '[mcp_servers.unimcp.env]\nK = "v"\n',
+      '[mcp_servers]\nunimcp = { command = "x" }\n',
+      'mcp_servers.unimcp.command = "x"\n',
+    ];
+    for (const existing of forms) expect(injectCodex(existing, LAUNCH)).toBe(existing);
+  });
+
+  test("a same-named key in another table is not a match", () => {
+    const existing = '[mcp_servers.other]\nunimcp = "x"\n\n[profiles]\nunimcp = { model = "m" }\n';
+    expect(injectCodex(existing, LAUNCH)).not.toBe(existing);
   });
 
   test("a sub-table of another server is not a match", () => {

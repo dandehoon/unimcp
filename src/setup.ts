@@ -115,15 +115,15 @@ function registerLocal(targets: TargetDef[], launch: Launch): void {
 }
 
 function registerGlobal(targets: TargetDef[], launch: Launch, force: boolean): void {
-  let registered = 0;
+  let isAnyFound = false;
 
   for (const target of targets) {
     const configPath = target.globalConfigPath();
-    const did = registerTarget({ label: target.label, configPath, launch, inject: target.inject, force });
-    if (did) registered++;
+    const outcome = registerTarget({ label: target.label, configPath, launch, inject: target.inject, force });
+    if (outcome !== "missing") isAnyFound = true;
   }
 
-  if (registered === 0) {
+  if (!isAnyFound) {
     log("[setup] no global configs found — run 'unimcp setup' (local) instead");
   }
 }
@@ -136,12 +136,14 @@ type RegisterTargetOpts = {
   force?: boolean;
 };
 
-function registerTarget(opts: RegisterTargetOpts): boolean {
+type RegisterOutcome = "registered" | "missing" | "unreadable";
+
+function registerTarget(opts: RegisterTargetOpts): RegisterOutcome {
   const raw = readFileSafe(opts.configPath);
 
   if (!opts.force && raw === null) {
     log(`[setup] ${opts.label}: config not found — skipped (use --target to force)`);
-    return false;
+    return "missing";
   }
 
   const existing = raw ?? "";
@@ -150,17 +152,17 @@ function registerTarget(opts: RegisterTargetOpts): boolean {
     updated = opts.inject(existing, opts.launch);
   } catch (err) {
     log(`[setup] ${opts.label}: could not read ${opts.configPath} (${(err as Error).message}) — skipped, file left as is`);
-    return false;
+    return "unreadable";
   }
 
   if (updated === existing) {
     log(`[setup] ${opts.label}: already registered — skipped`);
-    return true;
+    return "registered";
   }
 
   writeFileSafe(opts.configPath, updated, PERMS_PUBLIC);
   log(`[setup] ${opts.label}: registered at ${opts.configPath}`);
-  return true;
+  return "registered";
 }
 
 /** The installed binary if present; else this process — a compiled binary, or runtime + script (npm, `bun run`). */
@@ -168,5 +170,9 @@ function resolveLaunch(): Launch {
   if (existsSync(SYSTEM_BIN_PATH)) return { command: SYSTEM_BIN_PATH, args: [] };
   const script = process.argv[1];
   if (!SCRIPT_RUNTIMES.has(path.basename(process.execPath)) || !script) return { command: process.execPath, args: [] };
-  return { command: process.execPath, args: [path.resolve(script)] };
+  const scriptPath = path.resolve(script);
+  if (scriptPath.includes(`${path.sep}_npx${path.sep}`)) {
+    log("[setup] warning: registering a path in the npx cache, which may be cleared — install unimcp globally to keep it");
+  }
+  return { command: process.execPath, args: [scriptPath] };
 }

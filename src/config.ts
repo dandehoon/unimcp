@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "fs";
 import path from "path";
 import os from "os";
 import { PROFILE_RE } from "./profiles.js";
-import { isPlainObject, log, stripJsonComments, VERSION } from "./utils.js";
+import { isPlainObject, log, parseJsonc, VERSION } from "./utils.js";
 
 const MAX_CONFIG_BYTES = 1_048_576; // 1 MB
 
@@ -132,7 +132,7 @@ export function resolveMcpFile(opts: ResolveMcpFileOpts): string {
 
 /** Parses the config as written, leaving `${VAR}` references intact. */
 export function loadRawConfig(filePath: string): Config {
-  const parsed = JSON.parse(stripJsonComments(readRawConfig(filePath))) as Partial<Config>;
+  const parsed = parseJsonc(readRawConfig(filePath)) as Partial<Config>;
   const grants = parseGrants(parsed?.grants as unknown, filePath);
   const servers = parsed?.mcpServers;
   if (servers === undefined) return { mcpServers: {}, ...grants };

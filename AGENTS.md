@@ -244,7 +244,7 @@ Upstream clients are built in `transport.ts` (`buildTransport`, `buildSSETranspo
 - **Anything an upstream emits is shown masked.** Its stderr reaches `lastError` → `/status` and `unimcp status` only through `stdio.ts`, masked against the server's `env` values and every `${VAR}` value the config expanded (`Config.expandedValues`); `$(command)` failures name the command, never its output
 - `unimcp.json` is **gitignored** — never commit it; it is user-local
 - `.env` is **gitignored** and not auto-loaded; secrets come from the shell environment. `${VAR}` is expanded from `process.env` at load (`loadConfig()`; `loadRawConfig()` leaves it intact); a server or profile referencing an unset or empty var is **skipped entirely**
-- Config resolution: `--mcp-file` / `UNIMCP_CONFIG` > `./unimcp.json` > `DEFAULT_MCP_FILE` (`resolveMcpFile()` in `config.ts`). The file may contain comments (JSONC)
+- Config resolution: `--mcp-file` / `UNIMCP_CONFIG` > `./unimcp.json` > `DEFAULT_MCP_FILE` (`resolveMcpFile()` in `config.ts`). The file may contain comments and trailing commas (JSONC)
 - Daemon pid file `~/.config/unimcp/daemon.<envHash>.pid` holds `"<pid>:<port>"`
   - `envHash` (`computeEnvHash()`): 8-hex SHA-256 over the config's absolute path, the unimcp version, and every referenced `${VAR}`'s value (unset → `""`). Any change → a separate daemon; clients with the same hash share one
 
@@ -326,11 +326,11 @@ Codex (`config.toml`) is not collected — it would need a TOML parser.
 | `claude`          | `.mcp.json`         | `~/.claude.json`                                 | `mcpServers` | `"stdio"`          |
 | `cursor`          | `.cursor/mcp.json`  | `~/.cursor/mcp.json`                             | `mcpServers` | `"stdio"`          |
 | `copilot`         | `.vscode/mcp.json`  | `~/Library/.../Code/User/mcp.json`               | `servers`    | `"stdio"`          |
-| `opencode`        | _(none)_            | `~/.config/opencode/opencode.json[c]`            | `mcp.servers` | `"local"`         |
+| `opencode`        | _(none)_            | `~/.config/opencode/opencode.json[c]`            | `mcp` (pre-v2 shape, still loaded by v2) | `"local"` |
 | `codex`           | `.codex/config.toml` | `~/.codex/config.toml`                          | `[mcp_servers.unimcp]` | _(none)_  |
 | `antigravity`     | `.agents/mcp_config.json` | `~/.gemini/config/mcp_config.json`         | `mcpServers` | _(none)_           |
 
-- **Dedup**: skips a target if `"unimcp"` key already exists (OpenCode: either shape)
+- **Dedup**: skips a target if `"unimcp"` key already exists (OpenCode: `mcp` or v2 `mcp.servers`; Codex: any table, dotted or inline key at or under `mcp_servers.unimcp`)
 - A JSON file that fails to parse is skipped and left untouched; a JSONC file that is rewritten loses its comments
 - **`--global --target=claude,copilot`**: force-write global even if file doesn't exist
 - OpenCode is global only here; a Codex project config applies only to trusted projects

@@ -21,16 +21,19 @@ export function injectVsCodeServers(raw: string, launch: Launch): string {
   return injectJsonEntry(raw, { keyPath: ["servers"], entry: { type: "stdio", ...launch } });
 }
 
-/** OpenCode v2: `mcp.servers.<name>`, command and args in one array. */
+/**
+ * OpenCode: `mcp.<name>`, command and args in one array. v2 moved servers to `mcp.servers`, but
+ * its schema still loads this shape, and older versions know no other.
+ */
 export function injectOpenCode(raw: string, launch: Launch): string {
-  if (hasOpenCodeEntry(raw)) return raw;
-  const entry = { type: "local", command: [launch.command, ...launch.args] };
-  return injectJsonEntry(raw, { keyPath: ["mcp", "servers"], entry });
+  if (hasOpenCodeV2Entry(raw)) return raw;
+  const entry = { type: "local", command: [launch.command, ...launch.args], enabled: true };
+  return injectJsonEntry(raw, { keyPath: ["mcp"], entry });
 }
 
 /** Codex `config.toml`: appends a `[mcp_servers.unimcp]` table, as `codex mcp add` does. */
 export function injectCodex(raw: string, launch: Launch): string {
-  if (CODEX_TABLE_RE.test(raw)) return raw;
+  if (hasCodexEntry(raw)) return raw;
   // A JSON string or string array is also a valid TOML basic string / array.
   const table = `[mcp_servers.${SERVER_NAME}]\ncommand = ${JSON.stringify(launch.command)}\nargs = ${JSON.stringify(launch.args)}\n`;
   if (raw.trim() === "") return table;
@@ -39,7 +42,36 @@ export function injectCodex(raw: string, launch: Launch): string {
 
 // --- helpers ---
 
-const CODEX_TABLE_RE = new RegExp(`^\\s*\\[\\s*mcp_servers\\s*\\.\\s*"?${SERVER_NAME}"?\\s*\\]`, "m");
+const CODEX_ENTRY = `mcp_servers.${SERVER_NAME}`;
+const TOML_HEADER_RE = /^\s*\[\[?([^\]]+)\]/;
+const TOML_KEY_RE = /^\s*([^\s=#[][^=]*?)\s*=/;
+
+/**
+ * Whether any line defines a key at or under `mcp_servers.unimcp`: a table header, a dotted key, or an
+ * inline table under `[mcp_servers]`. Line-based, so text inside a multi-line string could match too.
+ */
+function hasCodexEntry(raw: string): boolean {
+  let table = "";
+  for (const line of raw.split("\n")) {
+    const header = TOML_HEADER_RE.exec(line);
+    if (header) {
+      table = normalizeTomlKey(header[1]!);
+      if (isCodexEntryPath(table)) return true;
+      continue;
+    }
+    const key = TOML_KEY_RE.exec(line);
+    if (key && isCodexEntryPath([table, normalizeTomlKey(key[1]!)].filter(Boolean).join("."))) return true;
+  }
+  return false;
+}
+
+function isCodexEntryPath(keyPath: string): boolean {
+  return keyPath === CODEX_ENTRY || keyPath.startsWith(`${CODEX_ENTRY}.`);
+}
+
+function normalizeTomlKey(key: string): string {
+  return key.replace(/["'\s]/g, "");
+}
 
 type InjectJsonOpts = { keyPath: string[]; entry: unknown };
 
@@ -63,10 +95,9 @@ function sectionAt(config: Record<string, unknown>, keyPath: string[]): Record<s
   return node;
 }
 
-/** The pre-v2 shape, `mcp.<name>`, still loads — an entry there counts as registered. */
-function hasOpenCodeEntry(raw: string): boolean {
+function hasOpenCodeV2Entry(raw: string): boolean {
   const mcp = parseObject(raw)["mcp"];
-  return isPlainObject(mcp) && mcp[SERVER_NAME] !== undefined;
+  return isPlainObject(mcp) && isPlainObject(mcp["servers"]) && mcp["servers"][SERVER_NAME] !== undefined;
 }
 
 function parseObject(raw: string): Record<string, unknown> {
