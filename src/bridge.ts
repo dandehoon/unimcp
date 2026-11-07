@@ -7,6 +7,7 @@ import {
   CallToolRequestSchema,
   ErrorCode,
   McpError,
+  ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { loadRawConfig, missingEnvVars, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, HEADER_TOOLS_GRANTS } from "./config.js";
@@ -34,7 +35,16 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
   let daemonUrl = new URL(`http://${opts.host}:${opts.port}/mcp`);
   let headers = buildFilterHeaders();
 
-  let client = await createClient(daemonUrl, headers);
+  const server = new Server(
+    MCP_SERVER_IDENTITY,
+    { capabilities: { tools: { listChanged: true } } }
+  );
+  // The daemon says when an upstream's tools appear or change, e.g. a server back after an outage.
+  const onToolsChanged = () => {
+    server.sendToolListChanged().catch((err) => log("[bridge] tools/list_changed failed:", String(err)));
+  };
+
+  let client = await createClient({ url: daemonUrl, headers, onToolsChanged });
   let lastReconnectAt = 0;
 
   const initialTools = await client.listTools();
@@ -56,13 +66,15 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
       const newPort = await ensureDaemon({ port: opts.port, host: opts.host, configPath: opts.configPath, envHash: opts.envHash });
       await switchClient(new URL(`http://${opts.host}:${newPort}/mcp`));
       log(`[bridge] daemon re-spawned on port ${newPort}`);
+      // A fresh daemon connected its upstreams anew: which are up may differ from what the client listed.
+      onToolsChanged();
     }
   }
 
   /** Connects with the grants held right now, so no reconnect can resurrect a revoked one. */
   async function switchClient(url: URL): Promise<void> {
     const next = buildFilterHeaders();
-    const fresh = await createClient(url, next);
+    const fresh = await createClient({ url, headers: next, onToolsChanged });
     const old = client;
     client = fresh;
     daemonUrl = url;
@@ -99,11 +111,6 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
       return await fn();
     }
   }
-
-  const server = new Server(
-    MCP_SERVER_IDENTITY,
-    { capabilities: { tools: { listChanged: true } } }
-  );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     try {
@@ -149,12 +156,16 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
 
 // --- helpers ---
 
-async function createClient(
-  daemonUrl: URL,
-  headers: Record<string, string> | undefined,
-): Promise<Client> {
+type DaemonClientOptions = {
+  url: URL;
+  headers: Record<string, string> | undefined;
+  onToolsChanged: () => void;
+};
+
+async function createClient({ url, headers, onToolsChanged }: DaemonClientOptions): Promise<Client> {
   const client = new Client({ name: "unimcp-bridge", version: MCP_SERVER_IDENTITY.version });
-  const transport = new StreamableHTTPClientTransport(daemonUrl, {
+  client.setNotificationHandler(ToolListChangedNotificationSchema, onToolsChanged);
+  const transport = new StreamableHTTPClientTransport(url, {
     requestInit: headers ? { headers } : undefined,
   });
   await client.connect(transport);

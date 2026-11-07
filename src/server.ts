@@ -29,7 +29,7 @@ export type ManagedServerOptions = {
 function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Server {
   const server = new Server(
     MCP_SERVER_IDENTITY,
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: { listChanged: true } } }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -68,6 +68,11 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   let resolveReady: () => void = () => {};
   const readyPromise = new Promise<void>((r) => { resolveReady = r; });
   let isShuttingDown = false;
+  // Each bridge holds a GET stream open: the one way to tell it, unasked, that the tools changed.
+  const sessionServers = new Set<Server>();
+  const notifyToolsChanged = () => {
+    for (const s of sessionServers) s.sendToolListChanged().catch((err) => log("[server] tools/list_changed failed:", String(err)));
+  };
 
   function scheduleShutdown() {
     if (idleTimer) return;
@@ -140,9 +145,13 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     }
 
     let transport: StreamableHTTPServerTransport | null = null;
+    let mcpServer: Server | null = null;
+    let isClosed = false;
     // Use req.on("close") instead of res.on("close") — Bun does not fire res close events.
     req.on("close", () => {
       if (isSession) {
+        isClosed = true;
+        if (mcpServer) sessionServers.delete(mcpServer);
         activeSessions--;
         if (activeSessions === 0) scheduleShutdown();
         try { transport?.close(); } catch { /* not yet connected */ }
@@ -166,10 +175,11 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     }
 
     const clientFilter = parseToolFilterHeaders(req);
-    const mcpServer = buildMcpServer(aggregator, clientFilter);
+    mcpServer = buildMcpServer(aggregator, clientFilter);
     transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
     await mcpServer.connect(transport);
+    if (isSession && !isClosed) sessionServers.add(mcpServer);
     await transport.handleRequest(req, res);
   });
 
@@ -191,7 +201,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   const closeTokenWatcher = watchTokenStore((name) => { tokenEvents.add(name); flushTokenEvents(); });
 
   try {
-    const initial = await buildAggregator(opts.configPath);
+    const initial = await buildAggregator(opts.configPath, notifyToolsChanged);
     aggregator = initial.aggregator;
   } catch (err) {
     log("[server] initial aggregator build failed:", String(err));
@@ -212,12 +222,13 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       // The new aggregator would start a second copy of a still-starting server into the same
       // install dir. The wait is bounded by the give-up; the build then reads the latest file.
       await aggregator?.whenStarted();
-      const next = await buildAggregator(opts.configPath);
+      const next = await buildAggregator(opts.configPath, notifyToolsChanged);
       // Swap reference first so new requests hit the fresh aggregator immediately,
       // then tear down the old one (eliminates race window and simultaneous live connections).
       const old = aggregator;
       aggregator = next.aggregator;
       log(`[server] reloaded — ${next.toolCount} tools`);
+      notifyToolsChanged();
       await old?.disconnect();
     } catch (err) {
       log("[server] reload failed:", String(err));
@@ -246,9 +257,9 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
 
 // --- helpers ---
 
-async function buildAggregator(configPath: string): Promise<{ aggregator: Aggregator; toolCount: number }> {
+async function buildAggregator(configPath: string, onToolsChanged: () => void): Promise<{ aggregator: Aggregator; toolCount: number }> {
   const config = loadConfig(configPath);
-  const aggregator = new Aggregator();
+  const aggregator = new Aggregator({ onToolsChanged });
   await aggregator.connect(config);
   const toolCount = aggregator.listTools().length;
   log(`[server] ${toolCount} tools ready`);

@@ -2,6 +2,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { type ServerConfig, isHttpServer, isSseServer, isOAuthServer } from "./config.js";
 import { AuthRequiredError, FileOAuthProvider } from "./oauth.js";
 
@@ -50,12 +51,28 @@ export function isAuthError(err: unknown): boolean {
     msg.includes("401") || msg.includes("403");
 }
 
+export class TimeoutError extends Error {}
+
 export function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   let timer!: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
+    timer = setTimeout(() => reject(new TimeoutError(message)), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/** Our deadline or the SDK's own request timeout: the server may be slow rather than gone. */
+export function isTimeout(err: unknown): boolean {
+  return err instanceof TimeoutError || (err instanceof McpError && err.code === ErrorCode.RequestTimeout);
+}
+
+const NOT_DELIVERED = ["econnrefused", "unable to connect", "not connected", "session not found", "no valid session", "session-id header is required", "server not initialized"];
+
+/** The server never ran the request — refused, or rejected for a session it no longer knows — so sending it again can't run it twice. */
+export function wasNotDelivered(err: unknown): boolean {
+  // Node's fetch hides the socket error in `cause`, behind a bare "fetch failed".
+  const msg = `${String(err)} ${String((err as { cause?: unknown } | null)?.cause ?? "")}`.toLowerCase();
+  return NOT_DELIVERED.some((p) => msg.includes(p));
 }
 
 export function isTransportError(err: unknown): boolean {
