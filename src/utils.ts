@@ -61,6 +61,10 @@ export function parseJsonSafe<T>(raw: string, context: string): T | null {
   }
 }
 
+export function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 export function toJson(value: unknown): string {
   return JSON.stringify(value, null, 2) + "\n";
 }
@@ -74,11 +78,7 @@ export function stripJsonComments(raw: string): string {
 
   while (i < raw.length) {
     if (raw[i] === '"') {
-      i++;
-      while (i < raw.length) {
-        if (raw[i] === "\\") { i += 2; continue; }
-        if (raw[i++] === '"') break;
-      }
+      i = endOfString(raw, i);
       continue;
     }
     if (raw[i] === "/" && raw[i + 1] === "/") {
@@ -99,4 +99,45 @@ export function stripJsonComments(raw: string): string {
   }
   flush(i);
   return parts.join("");
+}
+
+/** Parses JSONC as editors write it: comments and trailing commas allowed. Throws on anything else. */
+export function parseJsonc(raw: string): unknown {
+  return JSON.parse(stripTrailingCommas(stripJsonComments(raw)));
+}
+
+function stripTrailingCommas(json: string): string {
+  let out = "";
+  let i = 0;
+  while (i < json.length) {
+    const ch = json[i]!;
+    if (ch === '"') {
+      const end = endOfString(json, i);
+      out += json.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (ch === "," && closesNext(json, i + 1)) {
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+function closesNext(json: string, from: number): boolean {
+  let i = from;
+  while (i < json.length && /\s/.test(json[i]!)) i++;
+  return json[i] === "}" || json[i] === "]";
+}
+
+function endOfString(json: string, start: number): number {
+  let i = start + 1;
+  while (i < json.length) {
+    if (json[i] === "\\") { i += 2; continue; }
+    if (json[i++] === '"') break;
+  }
+  return i;
 }

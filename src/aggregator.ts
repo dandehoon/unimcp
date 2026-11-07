@@ -7,7 +7,7 @@ import { PROFILE_ARG, type ProfileGroup, expandProfiles, routeProfile, takesProf
 import { AuthRequiredError } from "./oauth.js";
 import { substituteCommands } from "./substitute.js";
 import { type Connected, StillStarting, connectStdio, withDetail } from "./stdio.js";
-import { buildSSETransport, buildTransport, isAuthError, isTransportError, withTimeout } from "./transport.js";
+import { buildSSETransport, buildTransport, isAuthError, isTimeout, isTransportError, wasNotDelivered, withTimeout } from "./transport.js";
 import { log, VERSION } from "./utils.js";
 
 export const SEP = "__";
@@ -16,9 +16,25 @@ const CONNECT_TIMEOUT_MS = 30_000;
 /** How long a `starting` local server may run before it counts as hung; a cold npx install can take minutes. */
 const START_GIVE_UP_MS = 10 * 60_000;
 const CALL_TIMEOUT_MS = 60_000;
-const MAX_RECONNECT_ATTEMPTS = 5;
+/** How long a server whose call timed out gets to answer a ping before it counts as gone. */
+const PING_TIMEOUT_MS = 5_000;
 const BACKOFF_BASE_MS = 1_000;
-const BACKOFF_CAP_MS = 30_000;
+/** A down server is retried at this interval for as long as it stays down: networks and servers come back. */
+const BACKOFF_CAP_MS = 60_000;
+
+/**
+ * `startDeadlineMs`: how long a connect waits on a local server before leaving it `starting`.
+ * `startGiveUpMs`: how long it may stay `starting` before it counts as hung and is stopped.
+ * `onToolsChanged`: called when a server's listed tools change, e.g. one that was down comes up.
+ */
+export type AggregatorOptions = {
+  startDeadlineMs?: number;
+  startGiveUpMs?: number;
+  backoffBaseMs?: number;
+  backoffCapMs?: number;
+  callTimeoutMs?: number;
+  onToolsChanged?: () => void;
+};
 
 /**
  * `idle`: a profile member not yet used — it connects on its first call.
@@ -83,11 +99,7 @@ export class Aggregator {
   private pendingReconnects = new Map<string, Promise<void>>();
   private expandedValues: string[] = [];
 
-  /**
-   * `startDeadlineMs`: how long a connect waits on a local server before leaving it `starting`.
-   * `startGiveUpMs`: how long it may stay `starting` before it counts as hung and is stopped.
-   */
-  constructor(private readonly opts: { startDeadlineMs?: number; startGiveUpMs?: number } = {}) {}
+  constructor(private readonly opts: AggregatorOptions = {}) {}
 
   async connect(config: Config): Promise<void> {
     this.grants = config.grants ?? {};
@@ -126,28 +138,53 @@ export class Aggregator {
   private async connectOne(name: string, srv: ServerConfig, group?: string): Promise<void> {
     const entry: UpstreamEntry = { ...blankEntry(name, srv, "idle"), group };
     this.upstreams.set(name, entry);
+    await this.track(name, () => this.connectEntry(entry, "connected"));
+  }
+
+  /** One connect attempt; a failed one is retried in the background until it succeeds. */
+  private async connectEntry(entry: UpstreamEntry, verb: string): Promise<void> {
     try {
-      this.adopt(entry, await this.connectClient(name, srv));
-      log(`[${name}] connected (${entry.tools.length} tools)`);
+      if (this.adopt(entry, await this.connectClient(entry.name, entry.config))) log(`[${entry.name}] ${verb} (${entry.tools.length} tools)`);
     } catch (err) {
       if (err instanceof StillStarting) return this.awaitStart(entry, err);
-      log(`[${name}] failed to connect:`, err);
-      entry.state = "failed";
-      entry.lastError = String(err);
-      entry.lastErrorAt = Date.now();
+      if (entry.state === "disconnected") return;
+      this.markFailed(entry, err);
       // Retrying can't help until the user authorizes; retryIfDown picks up their new tokens.
-      if (!(err instanceof AuthRequiredError)) this.scheduleReconnect(name);
+      if (!(err instanceof AuthRequiredError)) this.scheduleReconnect(entry.name);
     }
   }
 
-  private adopt(entry: UpstreamEntry, result: Connected): void {
+  /** Takes on a connected client, closing the one it replaces; false when this aggregator is already done. */
+  private adopt(entry: UpstreamEntry, result: Connected): boolean {
+    if (entry.state === "disconnected") {
+      void result.client.close().catch(() => {});
+      return false;
+    }
+    const previous = entry.client;
+    const before = JSON.stringify(entry.tools);
     entry.client = result.client;
     entry.tools = result.tools.filter((t) => matchesFilter(t.name, serverFilter(entry.config)));
     entry.state = "connected";
     entry.connectedAt = Date.now();
     entry.reconnectAttempts = 0;
+    if (previous !== result.client) void previous.close().catch(() => {});
     this.invalidateCache();
-    this.setupErrorHandler(entry.name, result.client);
+    this.watchClient(entry, result.client);
+    if (JSON.stringify(entry.tools) !== before) this.opts.onToolsChanged?.();
+    return true;
+  }
+
+  /**
+   * Records why a server is down. Its client stays open until a new one replaces it: the transport
+   * reports a failed request before the call sees it, and closing then would hand the call
+   * "Connection closed" instead of the error that says whether it is safe to send again.
+   */
+  private markFailed(entry: UpstreamEntry, err: unknown): void {
+    // A server down for hours is retried every minute: log only when the reason changes.
+    if (String(err) !== entry.lastError) log(`[${entry.name}] unavailable:`, err);
+    entry.state = "failed";
+    entry.lastError = String(err);
+    entry.lastErrorAt = Date.now();
   }
 
   /**
@@ -168,18 +205,14 @@ export class Aggregator {
     }, giveUpMs);
     const adoption = starting.ready.then(
       (result) => {
-        this.adopt(entry, result);
-        log(`[${name}] connected after a slow start (${entry.tools.length} tools)`);
+        if (this.adopt(entry, result)) log(`[${name}] connected after a slow start (${entry.tools.length} tools)`);
       },
       (err) => {
         // disconnect() closed it on reload or shutdown: this aggregator is done with it.
         if (entry.state === "disconnected") return;
         // Prefixed, not replaced: err carries the server's last stderr lines.
         const reason = gaveUp ? withDetail(`still starting after ${giveUpMs / 1_000} s — stopped`, `: ${err instanceof Error ? err.message : String(err)}`) : err;
-        log(`[${name}] exited while starting:`, reason);
-        entry.state = "failed";
-        entry.lastError = String(reason);
-        entry.lastErrorAt = Date.now();
+        this.markFailed(entry, reason);
         this.scheduleReconnect(name);
       },
     ).finally(() => {
@@ -189,48 +222,29 @@ export class Aggregator {
     this.pendingReconnects.set(name, adoption);
   }
 
-  private setupErrorHandler(name: string, client: Client): void {
-    client.onerror = () => this.scheduleReconnect(name);
-    client.onclose = () => {
-      const entry = this.upstreams.get(name);
-      if (entry && entry.state === "connected") this.scheduleReconnect(name);
+  private watchClient(entry: UpstreamEntry, client: Client): void {
+    const onDown = (err?: Error) => {
+      // Only the live client counts: a replaced or deliberately closed one going down is expected.
+      if (entry.client !== client || entry.state !== "connected") return;
+      this.markFailed(entry, err ?? new Error("connection closed"));
+      this.scheduleReconnect(entry.name);
     };
+    client.onerror = onDown;
+    client.onclose = () => onDown();
   }
 
   private scheduleReconnect(name: string): void {
     const entry = this.upstreams.get(name);
-    if (!entry || entry.state === "reconnecting" || entry.state === "disconnected" || entry.state === "starting") return;
-    if (entry.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      entry.state = "failed";
-      return;
-    }
+    if (!entry || this.reconnectTimers.has(name)) return;
+    if (entry.state === "connected" || entry.state === "disconnected" || entry.state === "starting") return;
     entry.state = "reconnecting";
-    const delay = Math.min(BACKOFF_BASE_MS * 2 ** entry.reconnectAttempts, BACKOFF_CAP_MS);
+    const delay = Math.min((this.opts.backoffBaseMs ?? BACKOFF_BASE_MS) * 2 ** entry.reconnectAttempts, this.opts.backoffCapMs ?? BACKOFF_CAP_MS);
     entry.reconnectAttempts++;
-    const timer = setTimeout(() => void this.track(name, () => this.attemptReconnect(name)), delay);
+    const timer = setTimeout(() => {
+      this.reconnectTimers.delete(name);
+      void this.track(name, () => this.connectEntry(entry, "reconnected"));
+    }, delay);
     this.reconnectTimers.set(name, timer);
-  }
-
-  private async attemptReconnect(name: string): Promise<void> {
-    this.reconnectTimers.delete(name);
-    const entry = this.upstreams.get(name);
-    if (!entry || entry.state === "disconnected") return;
-
-    try {
-      this.adopt(entry, await this.connectClient(name, entry.config));
-      log(`[${name}] reconnected (${entry.tools.length} tools)`);
-    } catch (err) {
-      if (err instanceof StillStarting) return this.awaitStart(entry, err);
-      entry.lastError = String(err);
-      entry.lastErrorAt = Date.now();
-      if (entry.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS || err instanceof AuthRequiredError) {
-        entry.state = "failed";
-        log(`[${name}] reconnect failed permanently:`, err);
-      } else {
-        entry.state = "failed";
-        this.scheduleReconnect(name);
-      }
-    }
   }
 
   private invalidateCache(): void {
@@ -336,37 +350,44 @@ export class Aggregator {
 
     const upstream = this.upstreams.get(upstreamName);
     if (!upstream || (upstream.group && !group)) throw new Error(`Unknown upstream: ${upstreamName}`);
+    await this.ensureConnected(upstream, group);
+    const client = upstream.client;
+    try {
+      return await this.invoke(upstream, toolName, args);
+    } catch (err) {
+      if (!(await isGone(client, err))) throw err;
+      if (upstream.client === client && upstream.state === "connected") this.markFailed(upstream, err);
+      if (!wasNotDelivered(err)) {
+        this.scheduleReconnect(upstreamName);
+        throw err;
+      }
+      log(`[${upstreamName}] call never reached the server — reconnecting to send it again`);
+      await this.ensureConnected(upstream, group);
+      return await this.invoke(upstream, toolName, args);
+    }
+  }
+
+  /** Reconnects a server that is down before a call goes to it. */
+  private async ensureConnected(upstream: UpstreamEntry, group?: ProfileGroup): Promise<void> {
+    if (upstream.state === "connected") return;
     // Fail fast rather than hold the call for a minutes-long first install, or start a sibling
     // profile alongside it — starting, or still connecting toward it: both run the same command
     // into the same install dir.
-    if (upstream.state !== "connected") {
-      const busy = [...this.upstreams.values()].find((e) => e === upstream
-        ? e.state === "starting"
-        : group && e.group === group.name && "command" in e.config && (e.state === "starting" || this.pendingReconnects.has(e.name)));
-      if (busy) throw new Error(`Upstream ${busy.name} is still starting (first install?) — retry shortly`);
-      await this.onDemandReconnect(upstreamName, upstream);
-      if ((upstream as UpstreamEntry).state !== "connected") {
-        throw new Error(`Upstream ${upstreamName} is ${upstream.state} (reconnect failed)`);
-      }
-    }
+    const busy = [...this.upstreams.values()].find((e) => e === upstream
+      ? e.state === "starting"
+      : group && e.group === group.name && "command" in e.config && (e.state === "starting" || this.pendingReconnects.has(e.name)));
+    if (busy) throw new Error(`Upstream ${busy.name} is still starting (first install?) — retry shortly`);
+    await this.onDemandReconnect(upstream);
+    if ((upstream as UpstreamEntry).state !== "connected") throw new Error(`Upstream ${upstream.name} is unavailable (reconnect failed)`);
+  }
 
-    try {
-      return await withTimeout(
-        // Pinned last: the client can't override what the config fixes.
-        upstream.client.callTool({ name: toolName, arguments: { ...args, ...upstream.config.pinArgs } }),
-        CALL_TIMEOUT_MS,
-        `[${upstreamName}] callTool timed out`,
-      );
-    } catch (err) {
-      if (isTransportError(err)) {
-        upstream.state = "failed";
-        upstream.lastError = String(err);
-        upstream.lastErrorAt = Date.now();
-        this.invalidateCache();
-        this.scheduleReconnect(upstreamName);
-      }
-      throw err;
-    }
+  private invoke(upstream: UpstreamEntry, toolName: string, args: Record<string, unknown>): ReturnType<Client["callTool"]> {
+    return withTimeout(
+      // Pinned last: the client can't override what the config fixes.
+      upstream.client.callTool({ name: toolName, arguments: { ...args, ...upstream.config.pinArgs } }),
+      this.opts.callTimeoutMs ?? CALL_TIMEOUT_MS,
+      `[${upstream.name}] callTool timed out`,
+    );
   }
 
   getStatus(): UpstreamStatus[] {
@@ -381,8 +402,9 @@ export class Aggregator {
     await Promise.allSettled(starting.map((e) => this.pendingReconnects.get(e.name)));
   }
 
+  /** Whether a connect is under way, a slow start included. A server only waiting for its next retry doesn't count. */
   isReconnecting(): boolean {
-    return [...this.upstreams.values()].some((e) => e.state === "reconnecting" || e.state === "starting");
+    return this.pendingReconnects.size > 0;
   }
 
   /** Reconnects a failed server now, e.g. once its OAuth tokens arrive. */
@@ -390,11 +412,17 @@ export class Aggregator {
     // An attempt already in flight may have read the store before the new tokens landed.
     await this.pendingReconnects.get(name);
     const entry = this.upstreams.get(name);
-    if (entry?.state === "failed") await this.onDemandReconnect(name, entry);
+    if (entry?.state === "failed" || entry?.state === "reconnecting") await this.onDemandReconnect(entry);
   }
 
-  private onDemandReconnect(name: string, entry: UpstreamEntry): Promise<void> {
-    return this.track(name, () => this.reconnectNow(name, entry));
+  /** Connects now, skipping the backoff wait. */
+  private onDemandReconnect(entry: UpstreamEntry): Promise<void> {
+    return this.track(entry.name, () => {
+      const timer = this.reconnectTimers.get(entry.name);
+      if (timer) { clearTimeout(timer); this.reconnectTimers.delete(entry.name); }
+      entry.reconnectAttempts = 0;
+      return this.connectEntry(entry, "reconnected on demand");
+    });
   }
 
   /** Concurrent attempts share one, so a server never ends up with two live clients. */
@@ -407,23 +435,6 @@ export class Aggregator {
     });
     this.pendingReconnects.set(name, attempt);
     return attempt;
-  }
-
-  private async reconnectNow(name: string, entry: UpstreamEntry): Promise<void> {
-    const timer = this.reconnectTimers.get(name);
-    if (timer) { clearTimeout(timer); this.reconnectTimers.delete(name); }
-
-    entry.reconnectAttempts = 0;
-    try {
-      this.adopt(entry, await this.connectClient(name, entry.config));
-      log(`[${name}] on-demand reconnect succeeded (${entry.tools.length} tools)`);
-    } catch (err) {
-      if (err instanceof StillStarting) return this.awaitStart(entry, err);
-      entry.lastError = String(err);
-      entry.lastErrorAt = Date.now();
-      entry.state = "failed";
-      log(`[${name}] on-demand reconnect failed:`, err);
-    }
   }
 
   private async connectClient(name: string, rawSrv: ServerConfig): Promise<Connected> {
@@ -464,6 +475,8 @@ export class Aggregator {
   async disconnect(): Promise<void> {
     for (const timer of this.reconnectTimers.values()) clearTimeout(timer);
     this.reconnectTimers.clear();
+    // Attempts still in flight find their entry disconnected and drop what they connect.
+    this.pendingReconnects.clear();
     for (const entry of this.upstreams.values()) entry.state = "disconnected";
     this.invalidateCache();
     const results = await Promise.allSettled(Array.from(this.upstreams.values(), ({ client }) => client.close()));
@@ -475,6 +488,17 @@ export class Aggregator {
 }
 
 // --- helpers ---
+
+/** Whether a failed call means the server is gone. A slow tool times out on a healthy server too, so a timeout pings it first. */
+async function isGone(client: Client, err: unknown): Promise<boolean> {
+  if (!isTimeout(err)) return isTransportError(err) || wasNotDelivered(err);
+  try {
+    await withTimeout(client.ping(), PING_TIMEOUT_MS, "ping timed out");
+    return false;
+  } catch {
+    return true;
+  }
+}
 
 function isValidName(name: string, profiles: Config["profiles"]): boolean {
   // `.` joins a server and its profile in member names: `a.b` would collide with profile `b` of `a`.

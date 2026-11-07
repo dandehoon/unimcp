@@ -24,6 +24,7 @@ src/
   auth.ts         # `auth <name>` command — browser OAuth flow with a localhost callback
   auth-callback.ts # Waits for the OAuth redirect: localhost listener, or the redirect URL pasted on stdin
   setup.ts        # `setup` command — register unimcp in client configs
+  setup-inject.ts # Per-client entry writers (JSONC sections, Codex TOML table); never overwrite a file that fails to parse
   collect.ts      # `collect` command — read MCP configs from all clients, merge, output
   status.ts       # `status` command — list running daemons + loaded tools
   stop.ts         # `stop <id>` (ID prefix), `shutdown` (all), `restart` (ID prefix, current context, or --all)
@@ -243,7 +244,7 @@ Upstream clients are built in `transport.ts` (`buildTransport`, `buildSSETranspo
 - **Anything an upstream emits is shown masked.** Its stderr reaches `lastError` → `/status` and `unimcp status` only through `stdio.ts`, masked against the server's `env` values and every `${VAR}` value the config expanded (`Config.expandedValues`); `$(command)` failures name the command, never its output
 - `unimcp.json` is **gitignored** — never commit it; it is user-local
 - `.env` is **gitignored** and not auto-loaded; secrets come from the shell environment. `${VAR}` is expanded from `process.env` at load (`loadConfig()`; `loadRawConfig()` leaves it intact); a server or profile referencing an unset or empty var is **skipped entirely**
-- Config resolution: `--mcp-file` / `UNIMCP_CONFIG` > `./unimcp.json` > `DEFAULT_MCP_FILE` (`resolveMcpFile()` in `config.ts`). The file may contain comments (JSONC)
+- Config resolution: `--mcp-file` / `UNIMCP_CONFIG` > `./unimcp.json` > `DEFAULT_MCP_FILE` (`resolveMcpFile()` in `config.ts`). The file may contain comments and trailing commas (JSONC)
 - Daemon pid file `~/.config/unimcp/daemon.<envHash>.pid` holds `"<pid>:<port>"`
   - `envHash` (`computeEnvHash()`): 8-hex SHA-256 over the config's absolute path, the unimcp version, and every referenced `${VAR}`'s value (unset → `""`). Any change → a separate daemon; clients with the same hash share one
 
@@ -280,6 +281,7 @@ PROFILE_ARG      = "profile"                            (profiles.ts)
   - `aggregator.lockingGrant` refuses a call naming an unheld profile, matched on the server prefix (a glob would let a `/` in a tool name slip past). A client holding none sees no group tools
   - `connect()` tries members in order until one succeeds or is `starting`; the rest stay `idle` and connect on first call
 - A stdio upstream gets no kill deadline (`stdio.ts`): one still running after 30 s is left `starting` (usually a first `npx` install) and adopted when it answers, or stopped after 10 min as hung. Nothing starts a second copy into the same install dir meanwhile: calls to it, or to a profile sibling starting or connecting, fail fast, and a config reload waits for it (`whenStarted`). A failed start's `lastError` carries the child's last stderr lines, masked (see above); its stderr is also forwarded to the daemon's own, as an inherited stream would be
+- A down upstream is retried in the background with backoff capped at 60 s, for as long as it stays down (auth failures wait for `retryIfDown`); a call to it reconnects inline first. A failed call is sent again once, after a reconnect, only when the upstream provably never ran it (`wasNotDelivered`: refused, unknown session); a timed-out call counts as a dead upstream only if a ping fails too. When a server's tools change, the daemon sends `tools/list_changed` down each bridge's GET stream and the bridge forwards it
 - `pinArgs` (any server): removed from the listed schemas and spread over the call's arguments last, so the client can't override them
 - `$(command)` (`substitute.ts`) runs in `connectClient`, on every connect and reconnect, and in `auth`; only in `env`, `headers` and `oauth.clientSecret` (never `command`/`args`: argv is visible in `ps`). Errors name the command and exit code, never its output
 - Grants are a guardrail, not a security boundary: the daemon trusts the claimed `X-Tools-Grants`. Grant globs are literal (`nonegate`, `nocomment`); empty lists/patterns are rejected at load
@@ -300,33 +302,39 @@ PROFILE_ARG      = "profile"                            (profiles.ts)
 
 ## Collect command
 
-`unimcp collect` merges MCP configs from installed editors into `{ "mcpServers": … }`: stdout, `-o <file>`, or `--save` (to the resolved config file, replacing only `mcpServers`). Sources, last-write-wins:
+`unimcp collect` merges MCP configs from installed editors into `{ "mcpServers": … }`: stdout, `-o <file>`, or `--save` (to the resolved config file, replacing only `mcpServers`). Files are read as JSONC (comments, trailing commas); an entry named `unimcp` is dropped. Sources, last-write-wins:
 1. Claude Code user (`~/.claude.json` → `mcpServers`)
 2. `.mcp.json` in cwd (`mcpServers`)
 3. Cursor global (`~/.cursor/mcp.json` → `mcpServers`)
 4. VS Code / Copilot global (`~/Library/.../Code/User/mcp.json` → `servers`, remapped)
-5. OpenCode global (`~/.config/opencode/opencode.json` → `mcp`, remapped, enabled only)
+5. OpenCode global (`~/.config/opencode/opencode.json[c]` → `mcp.servers`, and the older `mcp.<name>`; remapped, disabled skipped)
+6. Antigravity global (`~/.gemini/config/mcp_config.json` → `mcpServers`, `serverUrl` → `url`, disabled skipped)
+
+Codex (`config.toml`) is not collected — it would need a TOML parser.
 
 ---
 
 ## Setup / registration
 
-`unimcp setup` (or `pnpm register`) registers the binary in editor configs:
+`unimcp setup` (or `pnpm register`) registers the binary in editor configs — `/usr/local/bin/unimcp` if installed, else the running binary, or runtime + script under node/bun:
 
-**Local mode (default):** writes to `.mcp.json` (claude), `.cursor/mcp.json` (cursor), `.vscode/mcp.json` (copilot) in the current directory. Always creates/updates.
+**Local mode (default):** writes the local path of every target that has one (table below) in the current directory. Always creates/updates.
 
 **Global mode (`--global`):** writes to user-level config files. Only updates if the config file already exists. Use `--target` to force-create.
 
 | Target            | Local path (cwd)    | Global path                                      | Key          | Type value         |
 | ----------------- | ------------------- | ------------------------------------------------ | ------------ | ------------------ |
-| `claude`          | `.mcp.json`         | `~/.claude.json`                                 | `mcpServers` | _(implicit stdio)_ |
-| `cursor`          | `.cursor/mcp.json`  | `~/.cursor/mcp.json`                             | `mcpServers` | _(implicit stdio)_ |
+| `claude`          | `.mcp.json`         | `~/.claude.json`                                 | `mcpServers` | `"stdio"`          |
+| `cursor`          | `.cursor/mcp.json`  | `~/.cursor/mcp.json`                             | `mcpServers` | `"stdio"`          |
 | `copilot`         | `.vscode/mcp.json`  | `~/Library/.../Code/User/mcp.json`               | `servers`    | `"stdio"`          |
-| `opencode`        | _(none)_            | `~/.config/opencode/opencode.json`               | `mcp`        | `"local"`          |
+| `opencode`        | _(none)_            | `~/.config/opencode/opencode.json[c]`            | `mcp` (pre-v2 shape, still loaded by v2) | `"local"` |
+| `codex`           | `.codex/config.toml` | `~/.codex/config.toml`                          | `[mcp_servers.unimcp]` | _(none)_  |
+| `antigravity`     | `.agents/mcp_config.json` | `~/.gemini/config/mcp_config.json`         | `mcpServers` | _(none)_           |
 
-- **Dedup**: skips a target if `"unimcp"` key already exists
+- **Dedup**: skips a target if `"unimcp"` key already exists (OpenCode: `mcp` or v2 `mcp.servers`; Codex: any table, dotted or inline key at or under `mcp_servers.unimcp`)
+- A JSON file that fails to parse is skipped and left untouched; a JSONC file that is rewritten loses its comments
 - **`--global --target=claude,copilot`**: force-write global even if file doesn't exist
-- OpenCode has no project-level equivalent (global only)
+- OpenCode is global only here; a Codex project config applies only to trusted projects
 
 ---
 
