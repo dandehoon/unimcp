@@ -1,53 +1,81 @@
 import { existsSync } from "fs";
 import path from "path";
 
-import { VSCODE_MCP_PATH, CLAUDE_GLOBAL_PATH, CURSOR_GLOBAL_PATH, OPENCODE_PATH } from "./config.js";
-import { stripJsonComments, log, readFileSafe, parseJsonSafe, toJson, writeFileSafe, PERMS_PUBLIC } from "./utils.js";
+import {
+  VSCODE_MCP_PATH,
+  CLAUDE_GLOBAL_PATH,
+  CURSOR_GLOBAL_PATH,
+  CODEX_GLOBAL_PATH,
+  ANTIGRAVITY_GLOBAL_PATH,
+  openCodeGlobalPath,
+} from "./config.js";
+import {
+  type Injector,
+  type Launch,
+  injectMcpServers,
+  injectAntigravity,
+  injectVsCodeServers,
+  injectOpenCode,
+  injectCodex,
+} from "./setup-inject.js";
+import { log, readFileSafe, writeFileSafe, PERMS_PUBLIC } from "./utils.js";
 
 const CWD = process.cwd();
-const SERVER_NAME = "unimcp";
 const SYSTEM_BIN_PATH = "/usr/local/bin/unimcp";
+const SCRIPT_RUNTIMES = new Set(["node", "bun", "node.exe", "bun.exe"]);
 
 // --- target definitions ---
 
-type TargetId = "claude" | "cursor" | "copilot" | "opencode";
-
 type TargetDef = {
-  id: TargetId;
+  id: string;
   label: string;
-  globalConfigPath: string;
+  globalConfigPath: () => string;
   localConfigPath: string | null;
-  inject: (raw: string, binPath: string) => string;
+  inject: Injector;
 };
 
-const TARGETS: TargetDef[] = [
+export const TARGETS: TargetDef[] = [
   {
     id: "claude",
     label: "Claude Code",
-    globalConfigPath: CLAUDE_GLOBAL_PATH,
+    globalConfigPath: () => CLAUDE_GLOBAL_PATH,
     localConfigPath: path.join(CWD, ".mcp.json"),
     inject: injectMcpServers,
   },
   {
     id: "cursor",
     label: "Cursor",
-    globalConfigPath: CURSOR_GLOBAL_PATH,
+    globalConfigPath: () => CURSOR_GLOBAL_PATH,
     localConfigPath: path.join(CWD, ".cursor", "mcp.json"),
     inject: injectMcpServers,
   },
   {
     id: "copilot",
     label: "VS Code / GitHub Copilot",
-    globalConfigPath: VSCODE_MCP_PATH,
+    globalConfigPath: () => VSCODE_MCP_PATH,
     localConfigPath: path.join(CWD, ".vscode", "mcp.json"),
     inject: injectVsCodeServers,
   },
   {
     id: "opencode",
     label: "OpenCode",
-    globalConfigPath: OPENCODE_PATH,
+    globalConfigPath: openCodeGlobalPath,
     localConfigPath: null,
     inject: injectOpenCode,
+  },
+  {
+    id: "codex",
+    label: "Codex",
+    globalConfigPath: () => CODEX_GLOBAL_PATH,
+    localConfigPath: path.join(CWD, ".codex", "config.toml"),
+    inject: injectCodex,
+  },
+  {
+    id: "antigravity",
+    label: "Antigravity",
+    globalConfigPath: () => ANTIGRAVITY_GLOBAL_PATH,
+    localConfigPath: path.join(CWD, ".agents", "mcp_config.json"),
+    inject: injectAntigravity,
   },
 ];
 
@@ -59,21 +87,21 @@ export type SetupOpts = {
 };
 
 export async function runSetup(opts: SetupOpts): Promise<void> {
-  const binPath = resolveUnimcpBin();
+  const launch = resolveLaunch();
   const forceWrite = opts.targets !== null;
 
   const targets = TARGETS.filter((t) => opts.targets === null || opts.targets.includes(t.id));
 
   if (opts.isGlobal) {
-    registerGlobal(targets, binPath, forceWrite);
+    registerGlobal(targets, launch, forceWrite);
   } else {
-    registerLocal(targets, binPath);
+    registerLocal(targets, launch);
   }
 }
 
 // --- helpers ---
 
-function registerLocal(targets: TargetDef[], binPath: string): void {
+function registerLocal(targets: TargetDef[], launch: Launch): void {
   const localTargets = targets.filter((t) => t.localConfigPath !== null);
 
   if (localTargets.length === 0) {
@@ -82,20 +110,20 @@ function registerLocal(targets: TargetDef[], binPath: string): void {
   }
 
   for (const target of localTargets) {
-    registerTarget({ label: target.label, configPath: target.localConfigPath!, binPath, inject: target.inject, force: true });
+    registerTarget({ label: target.label, configPath: target.localConfigPath!, launch, inject: target.inject, force: true });
   }
 }
 
-function registerGlobal(targets: TargetDef[], binPath: string, force: boolean): void {
-  let registered = 0;
+function registerGlobal(targets: TargetDef[], launch: Launch, force: boolean): void {
+  let isAnyFound = false;
 
   for (const target of targets) {
-    const configPath = target.globalConfigPath;
-    const did = registerTarget({ label: target.label, configPath, binPath, inject: target.inject, force });
-    if (did) registered++;
+    const configPath = target.globalConfigPath();
+    const outcome = registerTarget({ label: target.label, configPath, launch, inject: target.inject, force });
+    if (outcome !== "missing") isAnyFound = true;
   }
 
-  if (registered === 0) {
+  if (!isAnyFound) {
     log("[setup] no global configs found — run 'unimcp setup' (local) instead");
   }
 }
@@ -103,68 +131,48 @@ function registerGlobal(targets: TargetDef[], binPath: string, force: boolean): 
 type RegisterTargetOpts = {
   label: string;
   configPath: string;
-  binPath: string;
-  inject: (raw: string, binPath: string) => string;
+  launch: Launch;
+  inject: Injector;
   force?: boolean;
 };
 
-function registerTarget(opts: RegisterTargetOpts): boolean {
+type RegisterOutcome = "registered" | "missing" | "unreadable";
+
+function registerTarget(opts: RegisterTargetOpts): RegisterOutcome {
   const raw = readFileSafe(opts.configPath);
 
   if (!opts.force && raw === null) {
     log(`[setup] ${opts.label}: config not found — skipped (use --target to force)`);
-    return false;
+    return "missing";
   }
 
   const existing = raw ?? "";
-  const updated = opts.inject(existing, opts.binPath);
+  let updated: string;
+  try {
+    updated = opts.inject(existing, opts.launch);
+  } catch (err) {
+    log(`[setup] ${opts.label}: could not read ${opts.configPath} (${(err as Error).message}) — skipped, file left as is`);
+    return "unreadable";
+  }
 
   if (updated === existing) {
     log(`[setup] ${opts.label}: already registered — skipped`);
-    return true;
+    return "registered";
   }
 
   writeFileSafe(opts.configPath, updated, PERMS_PUBLIC);
   log(`[setup] ${opts.label}: registered at ${opts.configPath}`);
-  return true;
+  return "registered";
 }
 
-function resolveUnimcpBin(): string {
-  if (existsSync(SYSTEM_BIN_PATH)) return SYSTEM_BIN_PATH;
-  return process.execPath;
-}
-
-export function injectMcpServers(raw: string, binPath: string): string {
-  return injectEntry(raw, { key: "mcpServers", entry: { command: binPath } });
-}
-
-export function injectVsCodeServers(raw: string, binPath: string): string {
-  const stripped = stripJsonComments(raw);
-  const updated = injectEntry(stripped, { key: "servers", entry: { type: "stdio", command: binPath, args: [] }, mutate: ensureVsCodeInputs });
-  return updated === stripped ? raw : updated;
-}
-
-export function injectOpenCode(raw: string, binPath: string): string {
-  return injectEntry(raw, { key: "mcp", entry: { type: "local", command: [binPath], enabled: true } });
-}
-
-// --- helpers ---
-
-function ensureVsCodeInputs(config: Record<string, unknown>): void {
-  if (!config["inputs"]) config["inputs"] = [];
-}
-
-type ConfigMutator = (config: Record<string, unknown>) => void;
-type InjectEntryOpts = { key: string; entry: unknown; mutate?: ConfigMutator };
-
-function injectEntry(raw: string, opts: InjectEntryOpts): string {
-  const config = raw.trim() ? (parseJsonSafe<Record<string, unknown>>(raw, "editor config") ?? {}) : {};
-  const section = (config[opts.key] ?? {}) as Record<string, unknown>;
-
-  if (section[SERVER_NAME]) return raw;
-
-  section[SERVER_NAME] = opts.entry;
-  config[opts.key] = section;
-  opts.mutate?.(config);
-  return toJson(config);
+/** The installed binary if present; else this process — a compiled binary, or runtime + script (npm, `bun run`). */
+function resolveLaunch(): Launch {
+  if (existsSync(SYSTEM_BIN_PATH)) return { command: SYSTEM_BIN_PATH, args: [] };
+  const script = process.argv[1];
+  if (!SCRIPT_RUNTIMES.has(path.basename(process.execPath)) || !script) return { command: process.execPath, args: [] };
+  const scriptPath = path.resolve(script);
+  if (scriptPath.includes(`${path.sep}_npx${path.sep}`)) {
+    log("[setup] warning: registering a path in the npx cache, which may be cleared — install unimcp globally to keep it");
+  }
+  return { command: process.execPath, args: [scriptPath] };
 }

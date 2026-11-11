@@ -1,6 +1,6 @@
 # unimcp
 
-A local MCP aggregator: define every MCP server once, and every client (Claude Code, Cursor, VS Code, OpenCode, …) reaches them through one shared daemon.
+A local MCP aggregator: define every MCP server once, and every client (Claude Code, Cursor, VS Code, OpenCode, Codex, Antigravity, …) reaches them through one shared daemon.
 
 - **One config** in the standard `mcpServers` format — an existing client config works as-is.
 - **One daemon** owns the upstream connections: it starts on first use, hot-reloads the config, and exits 30 s after the last client leaves, taking its stdio servers and containers with it.
@@ -17,7 +17,7 @@ unimcp collect --save    # import the servers your clients already have, or add 
 unimcp add context7 --type http --url https://mcp.context7.com/mcp
 unimcp add github --command npx --args "-y,@modelcontextprotocol/server-github" --env GITHUB_TOKEN='${GITHUB_TOKEN}'
 
-unimcp setup --global    # register unimcp with your clients (--target=claude,cursor,copilot,opencode)
+unimcp setup --global    # register unimcp with your clients (--target=claude,cursor,copilot,opencode,codex,antigravity)
 unimcp                   # in a terminal: daemon status and tools
 ```
 
