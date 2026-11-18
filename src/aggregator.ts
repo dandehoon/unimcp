@@ -281,8 +281,7 @@ export class Aggregator {
       this.toolCache = this.buildToolCache();
       this.clientFilterCache.clear();
     }
-    // Grant locks are the daemon's to apply: a client that sends no grants holds none.
-    const held = new Set(clientFilter?.grants);
+    const held = this.heldGrants(clientFilter);
     const locked = lockedPatterns(this.grants, held);
     const profiles = this.heldProfiles(held);
     const key = JSON.stringify([clientFilter?.include, clientFilter?.exclude, locked, profiles]);
@@ -293,6 +292,12 @@ export class Aggregator {
       this.clientFilterCache.set(key, cached);
     }
     return cached;
+  }
+
+  /** Grant locks are the daemon's to apply: a client holds what it sends, plus the profiles the config grants everyone. */
+  private heldGrants(clientFilter?: ToolFilter): Set<string> {
+    const granted = [...this.groups.values()].flatMap((g) => g.granted);
+    return new Set([...(clientFilter?.grants ?? []), ...granted]);
   }
 
   /** Each group's profiles the client holds the grant for: the only ones it sees or may pick. */
@@ -314,7 +319,7 @@ export class Aggregator {
     const config = sep > 0 ? this.listedConfig(prefixedName.slice(0, sep)) : undefined;
     if (!config) return false;
     const tool = { name: prefixedName, originalName: prefixedName.slice(sep + SEP.length) };
-    const held = new Set(clientFilter?.grants);
+    const held = this.heldGrants(clientFilter);
     const group = this.groups.get(prefixedName.slice(0, sep));
     if (group && !group.profiles.some((p) => held.has(p))) return false;
     const locked = lockedPatterns(this.grants, held);
@@ -323,7 +328,7 @@ export class Aggregator {
 
   /** The grant this call needs and the client lacks, if any: the profile it names, or an argument rule's. */
   lockingGrant(call: { name: string; args: Record<string, unknown>; clientFilter?: ToolFilter }): string | undefined {
-    const held = new Set(call.clientFilter?.grants);
+    const held = this.heldGrants(call.clientFilter);
     const server = call.name.slice(0, call.name.indexOf(SEP));
     // Judged on the server prefix alone, never a glob over the tool name, so no tool name slips past it.
     const group = this.groups.get(server);

@@ -88,11 +88,11 @@ export type GrantRule = string | { tool: string; args: Record<string, string> };
 /** Values for a server's `{var}` placeholders, one set per profile. */
 export type ProfileVars = Record<string, string>;
 
-/** One copy of a server: its `{var}` values, and what it is — shown to clients picking it. */
-export type Profile = { vars: ProfileVars; description?: string };
+/** One copy of a server: its `{var}` values, what it is — shown to clients picking it — and whether every client holds it. */
+export type Profile = { vars: ProfileVars; description?: string; granted?: boolean };
 
 /** A grant that is also a profile of `server`: the grant's name is the profile's. */
-type ProfileGrant = { server: string; vars?: ProfileVars; description?: string };
+type ProfileGrant = { server: string; vars?: ProfileVars; description?: string; granted?: boolean };
 
 export type Config = {
   mcpServers: Record<string, ServerConfig>;
@@ -146,14 +146,14 @@ export function loadRawConfig(filePath: string): Config {
 function parseGrants(raw: unknown, filePath: string): Pick<Config, "grants" | "profiles"> {
   if (raw === undefined) return {};
   const invalid = () => new Error(
-    `Config "grants" must map grant names to non-empty arrays of tool globs or { tool, args } rules, or to a { server, vars } profile: ${filePath}`);
+    `Config "grants" must map grant names to non-empty arrays of tool globs or { tool, args } rules, or to a { server, vars, granted? } profile: ${filePath}`);
   if (!isPlainObject(raw)) throw invalid();
   const grants: Record<string, GrantRule[]> = {};
   const profiles: Record<string, Record<string, Profile>> = {};
   for (const [name, value] of Object.entries(raw)) {
     if (isProfileGrant(value)) {
       if (!PROFILE_RE.test(name)) throw new Error(`Config grant '${name}' is a profile, so its name must be letters, digits, '-' or single '_': ${filePath}`);
-      (profiles[value.server] ??= {})[name] = { vars: value.vars ?? {}, description: value.description };
+      (profiles[value.server] ??= {})[name] = { vars: value.vars ?? {}, description: value.description, granted: value.granted };
     } else if (Array.isArray(value) && value.length > 0 && value.every(isGrantRule)) {
       grants[name] = value;
     } else {
@@ -166,6 +166,7 @@ function parseGrants(raw: unknown, filePath: string): Pick<Config, "grants" | "p
 function isProfileGrant(v: unknown): v is ProfileGrant {
   if (!isPlainObject(v) || typeof v.server !== "string" || v.server.trim() === "") return false;
   if (v.description !== undefined && typeof v.description !== "string") return false;
+  if (v.granted !== undefined && typeof v.granted !== "boolean") return false;
   return v.vars === undefined || (isPlainObject(v.vars) && Object.values(v.vars).every((s) => typeof s === "string"));
 }
 

@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { ServerConfig } from "../src/config.js";
+import type { Profile, ServerConfig } from "../src/config.js";
 import { expandProfiles, findServer, routeProfile, withProfileArg, withoutPinnedArgs } from "../src/profiles.js";
 import { Aggregator } from "../src/aggregator.js";
 
@@ -74,10 +74,10 @@ describe("routeProfile", () => {
 
 describe("Aggregator profile groups", () => {
   type Call = { name: string; arguments: Record<string, unknown> };
-  function aggregatorWithGroup(tools: Tool[] = [find]): { agg: Aggregator; calls: { member: string; call: Call }[] } {
+  function aggregatorWithGroup(tools: Tool[] = [find], groupProfiles: Record<string, Profile> = profiles): { agg: Aggregator; calls: { member: string; call: Call }[] } {
     const agg = new Aggregator();
     const calls: { member: string; call: Call }[] = [];
-    const { group, members } = expandProfiles("mongo", mongo, profiles);
+    const { group, members } = expandProfiles("mongo", mongo, groupProfiles);
     // Private, and only filled by live connections; seed them directly.
     const internals = agg as unknown as { upstreams: Map<string, unknown>; groups: Map<string, unknown> };
     internals.groups.set("mongo", group);
@@ -124,6 +124,15 @@ describe("Aggregator profile groups", () => {
   test("a member can't be called by its own name", async () => {
     const { agg } = aggregatorWithGroup();
     await expect(agg.callTool("mongo.main__find", {})).rejects.toThrow(/Unknown upstream/);
+  });
+
+  test("a granted profile is held by every client, alongside the ones it asks for", () => {
+    const { agg } = aggregatorWithGroup([find], { ...profiles, main: { ...profiles.main, granted: true } });
+    expect(agg.listTools()[0].inputSchema.properties?.profile).toMatchObject({ enum: ["main"] });
+    expect(agg.isCallable("mongo__find")).toBe(true);
+    expect(agg.lockingGrant({ name: "mongo__find", args: { profile: "main" } })).toBeUndefined();
+    expect(agg.lockingGrant({ name: "mongo__find", args: { profile: "bp" } })).toBe("bp");
+    expect(agg.listTools({ grants: ["bp"] })[0].inputSchema.properties?.profile).toMatchObject({ enum: ["main", "bp"] });
   });
 
   test("an unheld profile refuses the call, naming its grant, whatever the tool name", () => {
