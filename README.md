@@ -86,7 +86,7 @@ A grant written as `{ "server", "vars" }` is a **profile**: its own copy of a se
 }
 ```
 
-Add `"granted": true` to a profile to give it to every client without asking — the account an agent uses by default, beside others it needs granted.
+Add `"granted": true` to a profile to have every client hold it without asking, beside the profiles it is granted; a client can't give it up. Calls still name the profile.
 
 Grants are a guardrail, not a security boundary: any local process can claim any grant. Keep tools that must never be reachable out of the config.
 

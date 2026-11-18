@@ -146,7 +146,7 @@ export function loadRawConfig(filePath: string): Config {
 function parseGrants(raw: unknown, filePath: string): Pick<Config, "grants" | "profiles"> {
   if (raw === undefined) return {};
   const invalid = () => new Error(
-    `Config "grants" must map grant names to non-empty arrays of tool globs or { tool, args } rules, or to a { server, vars, granted? } profile: ${filePath}`);
+    `Config "grants" must map grant names to non-empty arrays of tool globs or { tool, args } rules, or to a { server, vars, description?, granted? } profile: ${filePath}`);
   if (!isPlainObject(raw)) throw invalid();
   const grants: Record<string, GrantRule[]> = {};
   const profiles: Record<string, Record<string, Profile>> = {};
