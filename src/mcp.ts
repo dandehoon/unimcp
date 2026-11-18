@@ -1,6 +1,6 @@
 import { loadRawConfig } from "./config.js";
 import type { Config, ServerConfig } from "./config.js";
-import { log, parseKvPairs, writeFileSafe, toJson } from "./utils.js";
+import { log, parseKvPairs, writeFileSafe, toJson, RESERVED_SERVER_NAME } from "./utils.js";
 import { formatServer, formatListLine } from "./mcp-format.js";
 
 export type AddOpts = {
@@ -87,6 +87,7 @@ function requireServer(name: string, config: Config): ServerConfig {
 }
 
 function guardNotExists(name: string, config: Config): void {
+  if (name === RESERVED_SERVER_NAME) die(`'${name}' is reserved for unimcp's own tools — pick another name`);
   if (config.mcpServers[name]) die(`server '${name}' already exists — remove it first`);
 }
 

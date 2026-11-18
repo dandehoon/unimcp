@@ -23,6 +23,8 @@ unimcp                   # in a terminal: daemon status and tools
 
 Each client spawns a thin stdio bridge; the bridges share one HTTP daemon (port 4848, or a free one) that serves upstream tools as `serverName__toolName`. A daemon serves one context — the config file, the unimcp version and the values of the `${VAR}`s it references — so different secrets get separate daemons.
 
+Agents also get `unimcp__refresh`: it reconnects servers that are down and re-reads the tools of connected ones, optionally limited to `servers`. A server can't be named `unimcp`.
+
 ## Configuration
 
 `~/.config/unimcp/unimcp.json`, unless `--mcp-file`, `UNIMCP_CONFIG` or a `./unimcp.json` says otherwise. Comments are allowed.

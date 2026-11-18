@@ -3,6 +3,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ServerConfig } from "./config.js";
 import { buildTransport } from "./transport.js";
+import { maskSecrets } from "./utils.js";
 
 // Starting a local (stdio) upstream: no kill deadline, and its stderr kept for the error if it dies.
 
@@ -59,8 +60,6 @@ export function withDetail(err: unknown, more: string): Error {
 
 const STDERR_TAIL_LINES = 8;
 const STDERR_TAIL_BYTES = 4_000;
-// Short values are flags (`1`, `true`), not secrets; masking them would garble every line.
-const MIN_SECRET_LENGTH = 8;
 
 /**
  * Forwards the child's stderr to ours, as an inherited stream would (it reaches a terminal when the
@@ -69,8 +68,7 @@ const MIN_SECRET_LENGTH = 8;
  */
 function stderrTail(transport: StdioClientTransport, secrets: string[]): { read: () => string; stop: () => void } {
   const stream = transport.stderr;
-  const masks = secrets.filter((s) => s.length >= MIN_SECRET_LENGTH);
-  const mask = (text: string) => masks.reduce((t, s) => t.replaceAll(s, "***"), text);
+  const mask = (text: string) => maskSecrets(text, secrets);
   let tail = "";
   // Masked before trimming, so the cut can't leave a secret's unmatched remainder in the tail.
   const collect = (chunk: Buffer) => { tail = mask(tail + chunk.toString()).slice(-STDERR_TAIL_BYTES); };

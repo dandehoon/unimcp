@@ -14,6 +14,7 @@ src/
   transport.ts    # Upstream transports (stdio / StreamableHTTP / SSE), transport and auth error checks, withTimeout
   client-grants.ts # `grants/<pid>` per client process: `unimcp grant` edits, stale and exited-client files ignored or pruned
   stdio.ts        # Starting a stdio upstream — no kill deadline (StillStarting), stderr kept and masked for the error
+  refresh.ts      # `unimcp__refresh` tool — schema, argument checks, report
   server.ts       # Managed HTTP daemon — /health /status /mcp, sessions, idle shutdown, hot reload, port fallback
   daemon.ts       # Daemon spawn / supervisor — detached process, PID file, health-check loop
   bridge.ts       # Stdio ↔ HTTP bridge (default mode) — auto-reconnect, forwards UNIMCP_INCLUDE/EXCLUDE and held grants as headers
@@ -241,7 +242,7 @@ Upstream clients are built in `transport.ts` (`buildTransport`, `buildSSETranspo
 ## Key architectural rules
 
 - **This repo is public — keep the author's setup out of it.** Code, comments, tests, docs, commit messages and PR text use generic examples: no real server names, hosts, connection strings, tokens, internal URLs, company or project names, personal paths, or numbers measured on one machine. Describe the general case ("a cold `npx` install can take minutes"), not the incident that prompted it
-- **Anything an upstream emits is shown masked.** Its stderr reaches `lastError` → `/status` and `unimcp status` only through `stdio.ts`, masked against the server's `env` values and every `${VAR}` value the config expanded (`Config.expandedValues`); `$(command)` failures name the command, never its output
+- **Anything an upstream emits is shown masked.** Its stderr reaches `lastError` → `/status`, `unimcp status` and `unimcp__refresh` only through `stdio.ts`, masked against the server's `env` values and every `${VAR}` value the config expanded (`Config.expandedValues`); `$(command)` failures name the command, never its output
 - `unimcp.json` is **gitignored** — never commit it; it is user-local
 - `.env` is **gitignored** and not auto-loaded; secrets come from the shell environment. `${VAR}` is expanded from `process.env` at load (`loadConfig()`; `loadRawConfig()` leaves it intact); a server or profile referencing an unset or empty var is **skipped entirely**
 - Config resolution: `--mcp-file` / `UNIMCP_CONFIG` > `./unimcp.json` > `DEFAULT_MCP_FILE` (`resolveMcpFile()` in `config.ts`). The file may contain comments and trailing commas (JSONC)
@@ -260,6 +261,7 @@ CLIENT_NAME      = "unimcp"                             (aggregator.ts; version 
 IDLE_TIMEOUT_MS  = 30_000                               (server.ts)
 SPAWN_WAIT_MS    = 15_000                               (daemon.ts)
 SEP              = "__"                                 (aggregator.ts)
+RESERVED_SERVER_NAME = "unimcp"                         (aggregator.ts)
 PROFILE_ARG      = "profile"                            (profiles.ts)
 ```
 
@@ -281,7 +283,10 @@ PROFILE_ARG      = "profile"                            (profiles.ts)
   - `aggregator.lockingGrant` refuses a call naming an unheld profile, matched on the server prefix (a glob would let a `/` in a tool name slip past). A client holding none sees no group tools; a `granted: true` profile is held by every client (`aggregator.heldGrants`)
   - `connect()` tries members in order until one succeeds or is `starting`; the rest stay `idle` and connect on first call
 - A stdio upstream gets no kill deadline (`stdio.ts`): one still running after 30 s is left `starting` (usually a first `npx` install) and adopted when it answers, or stopped after 10 min as hung. Nothing starts a second copy into the same install dir meanwhile: calls to it, or to a profile sibling starting or connecting, fail fast, and a config reload waits for it (`whenStarted`). A failed start's `lastError` carries the child's last stderr lines, masked (see above); its stderr is also forwarded to the daemon's own, as an inherited stream would be
-- A down upstream is retried in the background with backoff capped at 60 s, for as long as it stays down (auth failures wait for `retryIfDown`); a call to it reconnects inline first. A failed call is sent again once, after a reconnect, only when the upstream provably never ran it (`wasNotDelivered`: refused, unknown session); a timed-out call counts as a dead upstream only if a ping fails too. When a server's tools change, the daemon sends `tools/list_changed` down each bridge's GET stream and the bridge forwards it
+- A down upstream is retried in the background with backoff capped at 10 min, for as long as it stays down (auth failures wait for `retryIfDown`); a call to it reconnects inline first. A failed call is sent again once, after a reconnect, only when the upstream provably never ran it (`wasNotDelivered`: refused, unknown session); a timed-out call counts as a dead upstream only if a ping fails too. An upstream's own `tools/list_changed` re-lists that server. When a server's tools change, the daemon sends `tools/list_changed` down each bridge's GET stream and the bridge forwards it
+- `unimcp__refresh({ servers? })` (`refresh.ts`, always listed, outside filters and grants): reconnects the named servers that are down — all when omitted or empty, a group covering the members whose profile the client holds — skipping the backoff, and re-lists connected ones; it never restarts a healthy one (the daemon is shared). After at most 45 s (under the bridge's 60 s request timeout) it returns each server's state, `lastError` when down, and the client's tools; slower connects carry on. `unimcp` is a reserved server name (`unimcp add` refuses it, the daemon skips it)
+- An upstream's `tools/list_changed` re-lists it with one re-read in flight per client, plus one more if another arrives meanwhile
+- `lastError` is masked in `markFailed`, whatever the transport, against `Config.expandedValues` and the `env`/`headers`/`oauth.clientSecret` values its last connect resolved (`$(command)` output included), so a failed `$(command)` keeps its name
 - `pinArgs` (any server): removed from the listed schemas and spread over the call's arguments last, so the client can't override them
 - `$(command)` (`substitute.ts`) runs in `connectClient`, on every connect and reconnect, and in `auth`; only in `env`, `headers` and `oauth.clientSecret` (never `command`/`args`: argv is visible in `ps`). Errors name the command and exit code, never its output
 - Grants are a guardrail, not a security boundary: the daemon trusts the claimed `X-Tools-Grants`. Grant globs are literal (`nonegate`, `nocomment`); empty lists/patterns are rejected at load

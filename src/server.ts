@@ -12,6 +12,7 @@ import {
 import { loadConfig, type ToolFilter, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, HEADER_TOOLS_GRANTS, CONFIG_DIR, pidFilePath } from "./config.js";
 import { Aggregator } from "./aggregator.js";
 import { watchTokenStore } from "./oauth.js";
+import { REFRESH_TOOL, callRefresh } from "./refresh.js";
 import { log, tryUnlink, splitCommaSeparated, writeFileSafe, PERMS_PRIVATE, MCP_SERVER_IDENTITY } from "./utils.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
@@ -33,11 +34,13 @@ function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Serv
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: aggregator.listTools(clientFilter).map(({ upstreamName: _u, originalName: _o, ...tool }) => tool),
+    tools: [...aggregator.listTools(clientFilter).map(({ upstreamName: _u, originalName: _o, ...tool }) => tool), REFRESH_TOOL],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
+    // Outside filters and grants: it is how a client recovers the tools those leave it.
+    if (name === REFRESH_TOOL.name) return callRefresh({ aggregator, args: args ?? {}, clientFilter });
     // A filtered-out or grant-locked tool is absent, not merely unlisted: knowing its name isn't enough.
     if (!aggregator.isCallable(name, clientFilter)) {
       throw new McpError(ErrorCode.InvalidParams, `Tool not available to this client: ${name}`);

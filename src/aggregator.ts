@@ -1,5 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { ToolListChangedNotificationSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Minimatch } from "minimatch";
 import { type Config, type GrantRule, type Profile, type ServerConfig, type ToolFilter, isHttpServer } from "./config.js";
 import { GLOB_OPTS, lockedPatterns, lockingGrant } from "./grants.js";
@@ -8,7 +8,7 @@ import { AuthRequiredError } from "./oauth.js";
 import { substituteCommands } from "./substitute.js";
 import { type Connected, StillStarting, connectStdio, withDetail } from "./stdio.js";
 import { buildSSETransport, buildTransport, isAuthError, isTimeout, isTransportError, wasNotDelivered, withTimeout } from "./transport.js";
-import { log, VERSION } from "./utils.js";
+import { log, maskSecrets, RESERVED_SERVER_NAME, VERSION } from "./utils.js";
 
 export const SEP = "__";
 const CLIENT_NAME = "unimcp";
@@ -19,8 +19,10 @@ const CALL_TIMEOUT_MS = 60_000;
 /** How long a server whose call timed out gets to answer a ping before it counts as gone. */
 const PING_TIMEOUT_MS = 5_000;
 const BACKOFF_BASE_MS = 1_000;
-/** A down server is retried at this interval for as long as it stays down: networks and servers come back. */
-const BACKOFF_CAP_MS = 60_000;
+/** A down server is retried at this interval for as long as it stays down; `unimcp__refresh` retries it sooner. */
+const BACKOFF_CAP_MS = 10 * 60_000;
+/** How long a refresh waits before reporting; under the bridge's 60 s request timeout. */
+export const REFRESH_WAIT_MS = 45_000;
 
 /**
  * `startDeadlineMs`: how long a connect waits on a local server before leaving it `starting`.
@@ -33,8 +35,12 @@ export type AggregatorOptions = {
   backoffBaseMs?: number;
   backoffCapMs?: number;
   callTimeoutMs?: number;
+  refreshWaitMs?: number;
   onToolsChanged?: () => void;
 };
+
+/** `servers`: listed names to refresh, all when omitted. `clientFilter`: whose profiles count. */
+export type RefreshOptions = { servers?: string[]; clientFilter?: ToolFilter };
 
 /**
  * `idle`: a profile member not yet used — it connects on its first call.
@@ -62,6 +68,8 @@ type UpstreamEntry = {
   lastError: string | null;
   lastErrorAt: number | null;
   reconnectAttempts: number;
+  /** Values its last connect resolved (env, headers, OAuth secret), masked in its errors. */
+  secrets: string[];
   /** Set on a profile member: reached only through its server's `profile` argument, never by its own name. */
   group?: string;
 };
@@ -97,6 +105,7 @@ export class Aggregator {
   private groups = new Map<string, ProfileGroup>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private pendingReconnects = new Map<string, Promise<void>>();
+  private relists = new Map<Client, { again: boolean; done: Promise<void> }>();
   private expandedValues: string[] = [];
 
   constructor(private readonly opts: AggregatorOptions = {}) {}
@@ -144,7 +153,7 @@ export class Aggregator {
   /** One connect attempt; a failed one is retried in the background until it succeeds. */
   private async connectEntry(entry: UpstreamEntry, verb: string): Promise<void> {
     try {
-      if (this.adopt(entry, await this.connectClient(entry.name, entry.config))) log(`[${entry.name}] ${verb} (${entry.tools.length} tools)`);
+      if (this.adopt(entry, await this.connectClient(entry))) log(`[${entry.name}] ${verb} (${entry.tools.length} tools)`);
     } catch (err) {
       if (err instanceof StillStarting) return this.awaitStart(entry, err);
       if (entry.state === "disconnected") return;
@@ -161,17 +170,59 @@ export class Aggregator {
       return false;
     }
     const previous = entry.client;
-    const before = JSON.stringify(entry.tools);
     entry.client = result.client;
-    entry.tools = result.tools.filter((t) => matchesFilter(t.name, serverFilter(entry.config)));
     entry.state = "connected";
     entry.connectedAt = Date.now();
     entry.reconnectAttempts = 0;
     if (previous !== result.client) void previous.close().catch(() => {});
-    this.invalidateCache();
     this.watchClient(entry, result.client);
-    if (JSON.stringify(entry.tools) !== before) this.opts.onToolsChanged?.();
+    this.setTools(entry, result.tools);
     return true;
+  }
+
+  /** Takes a server's listed tools, telling clients when they changed. */
+  private setTools(entry: UpstreamEntry, tools: Tool[]): void {
+    const before = JSON.stringify(entry.tools);
+    entry.tools = tools.filter((t) => matchesFilter(t.name, serverFilter(entry.config)));
+    if (JSON.stringify(entry.tools) === before) return;
+    this.invalidateCache();
+    this.opts.onToolsChanged?.();
+  }
+
+  /** One re-read in flight per client; changes announced meanwhile get a single one after it, so the last answer is the newest. */
+  private relist(entry: UpstreamEntry, client: Client): Promise<void> {
+    const inFlight = this.relists.get(client);
+    if (inFlight) {
+      inFlight.again = true;
+      return inFlight.done;
+    }
+    const run = { again: false, done: Promise.resolve() };
+    run.done = (async () => {
+      do {
+        run.again = false;
+        await this.relistOnce(entry, client);
+      } while (run.again);
+    })().finally(() => this.relists.delete(client));
+    this.relists.set(client, run);
+    return run.done;
+  }
+
+  /** Re-reads a connected server's tools; one found gone meanwhile is marked down and retried. */
+  private async relistOnce(entry: UpstreamEntry, client: Client): Promise<void> {
+    const isLive = () => entry.client === client && entry.state === "connected";
+    try {
+      const tools = await listToolsWithin(client, `[${entry.name}]`);
+      if (isLive()) this.setTools(entry, tools);
+    } catch (err) {
+      // A replaced or closed client's failure says nothing about the server: its successor reports for it.
+      if (!isLive()) return;
+      if (await isGone(client, err)) {
+        this.markFailed(entry, err);
+        this.scheduleReconnect(entry.name);
+        return;
+      }
+      log(`[${entry.name}] listing tools failed:`, this.masked(entry, err));
+    }
   }
 
   /**
@@ -180,10 +231,11 @@ export class Aggregator {
    * "Connection closed" instead of the error that says whether it is safe to send again.
    */
   private markFailed(entry: UpstreamEntry, err: unknown): void {
-    // A server down for hours is retried every minute: log only when the reason changes.
-    if (String(err) !== entry.lastError) log(`[${entry.name}] unavailable:`, err);
+    // A server down for hours is retried again and again: log only when the reason changes.
+    const reason = this.masked(entry, err);
+    if (reason !== entry.lastError) log(`[${entry.name}] unavailable:`, reason);
     entry.state = "failed";
-    entry.lastError = String(err);
+    entry.lastError = reason;
     entry.lastErrorAt = Date.now();
   }
 
@@ -231,6 +283,11 @@ export class Aggregator {
     };
     client.onerror = onDown;
     client.onclose = () => onDown();
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => this.relist(entry, client));
+  }
+
+  private masked(entry: UpstreamEntry, err: unknown): string {
+    return maskSecrets(String(err), [...entry.secrets, ...this.expandedValues]);
   }
 
   private scheduleReconnect(name: string): void {
@@ -378,12 +435,17 @@ export class Aggregator {
     // Fail fast rather than hold the call for a minutes-long first install, or start a sibling
     // profile alongside it — starting, or still connecting toward it: both run the same command
     // into the same install dir.
-    const busy = [...this.upstreams.values()].find((e) => e === upstream
-      ? e.state === "starting"
-      : group && e.group === group.name && "command" in e.config && (e.state === "starting" || this.pendingReconnects.has(e.name)));
+    const busy = this.startingConflict(upstream, group);
     if (busy) throw new Error(`Upstream ${busy.name} is still starting (first install?) — retry shortly`);
     await this.onDemandReconnect(upstream);
     if ((upstream as UpstreamEntry).state !== "connected") throw new Error(`Upstream ${upstream.name} is unavailable (reconnect failed)`);
+  }
+
+  /** The server itself still starting, or a local profile sibling starting or connecting: both run the same install. */
+  private startingConflict(upstream: UpstreamEntry, group?: ProfileGroup): UpstreamEntry | undefined {
+    return [...this.upstreams.values()].find((e) => e === upstream
+      ? e.state === "starting"
+      : group && e.group === group.name && "command" in e.config && (e.state === "starting" || this.pendingReconnects.has(e.name)));
   }
 
   private invoke(upstream: UpstreamEntry, toolName: string, args: Record<string, unknown>): ReturnType<Client["callTool"]> {
@@ -399,6 +461,39 @@ export class Aggregator {
     return [...this.upstreams.values()].map(({ name, state, tools, connectedAt, lastError, lastErrorAt, reconnectAttempts }) => ({
       name, state, toolCount: tools.length, connectedAt, lastError, lastErrorAt, reconnectAttempts,
     }));
+  }
+
+  /** Names clients know servers by: plain servers and profile groups, never a group's member. */
+  listedServers(): string[] {
+    return [...this.groups.keys(), ...[...this.upstreams.values()].filter((e) => !e.group).map((e) => e.name)];
+  }
+
+  /**
+   * Reconnects the servers that are down and re-reads the tools of those connected, among the
+   * listed `names` (all by default; a group covers its members). Never restarts a healthy one:
+   * other clients share it. A group's members go one at a time, as `connectGroup` does.
+   */
+  async refresh({ servers, clientFilter }: RefreshOptions = {}): Promise<UpstreamStatus[]> {
+    const held = this.heldGrants(clientFilter);
+    // A member counts only for a client holding its profile: the others aren't this client's to see or start.
+    const targets = [...this.upstreams.values()].filter((e) => (!servers || servers.includes(e.group ?? e.name))
+      && (!e.group || held.has(e.name.slice(e.group.length + 1))));
+    const lanes = Map.groupBy(targets, (e) => e.group ?? e.name);
+    const work = Promise.all([...lanes.values()].map(async (lane) => {
+      for (const entry of lane) await this.refreshEntry(entry);
+    }));
+    // Reports what it has by then; a slower server keeps connecting.
+    let timer!: ReturnType<typeof setTimeout>;
+    const waited = new Promise<void>((resolve) => { timer = setTimeout(resolve, this.opts.refreshWaitMs ?? REFRESH_WAIT_MS); });
+    await Promise.race([work, waited]).finally(() => clearTimeout(timer));
+    return this.getStatus().filter((s) => targets.some((t) => t.name === s.name));
+  }
+
+  private async refreshEntry(entry: UpstreamEntry): Promise<void> {
+    if (entry.state === "connected") await this.relist(entry, entry.client);
+    if (entry.state !== "failed" && entry.state !== "reconnecting") return;
+    if (this.startingConflict(entry, entry.group ? this.groups.get(entry.group) : undefined)) return;
+    await this.retryIfDown(entry.name);
   }
 
   /** Settles once no upstream is `starting`: each has connected, failed, or been given up on. */
@@ -442,19 +537,20 @@ export class Aggregator {
     return attempt;
   }
 
-  private async connectClient(name: string, rawSrv: ServerConfig): Promise<Connected> {
-    const srv = await substituteCommands(rawSrv);
+  private async connectClient(entry: UpstreamEntry): Promise<Connected> {
+    const { name } = entry;
+    const srv = await substituteCommands(entry.config);
+    entry.secrets = resolvedSecrets(srv);
     if ("command" in srv) {
       const client = new Client({ name: CLIENT_NAME, version: VERSION });
-      const secrets = [...Object.values(srv.env ?? {}), ...this.expandedValues];
+      const secrets = [...entry.secrets, ...this.expandedValues];
       return connectStdio({ name, srv, client, deadlineMs: this.opts.startDeadlineMs ?? CONNECT_TIMEOUT_MS, secrets });
     }
     const client = new Client({ name: CLIENT_NAME, version: VERSION });
     const transport = buildTransport(name, srv);
     try {
       await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] connect timed out`);
-      const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `[${name}] listTools timed out`);
-      return { client, tools };
+      return { client, tools: await listToolsWithin(client, `[${name}]`) };
     } catch (err) {
       try { await client.close(); } catch { /* ignore */ }
       if (isHttpServer(srv) && !isAuthError(err)) return this.connectViaSSE(name, srv);
@@ -468,7 +564,7 @@ export class Aggregator {
     const transport = buildSSETransport(name, srv);
     try {
       await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] SSE connect timed out`);
-      const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `[${name}] SSE listTools timed out`);
+      const tools = await listToolsWithin(client, `[${name}] SSE`);
       log(`[${name}] connected via SSE fallback`);
       return { client, tools };
     } catch (err) {
@@ -506,6 +602,10 @@ async function isGone(client: Client, err: unknown): Promise<boolean> {
 }
 
 function isValidName(name: string, profiles: Config["profiles"]): boolean {
+  if (name === RESERVED_SERVER_NAME) {
+    log(`[${name}] server name is reserved for unimcp's own tools — skipped`);
+    return false;
+  }
   // `.` joins a server and its profile in member names: `a.b` would collide with profile `b` of `a`.
   const shadowed = Object.keys(profiles ?? {}).find((server) => name.startsWith(`${server}.`));
   if (!name.includes(SEP) && !shadowed) return true;
@@ -517,8 +617,22 @@ function isValidName(name: string, profiles: Config["profiles"]): boolean {
 function blankEntry(name: string, config: ServerConfig, state: "failed" | "idle"): UpstreamEntry {
   return {
     name, client: new Client({ name: CLIENT_NAME, version: VERSION }), tools: [], config,
-    state, connectedAt: null, lastError: null, lastErrorAt: null, reconnectAttempts: 0,
+    state, connectedAt: null, lastError: null, lastErrorAt: null, reconnectAttempts: 0, secrets: [],
   };
+}
+
+async function listToolsWithin(client: Client, label: string): Promise<Tool[]> {
+  const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `${label} listTools timed out`);
+  return tools;
+}
+
+/** The values `$(command)` and the config filled into a server's credentials. */
+function resolvedSecrets(srv: ServerConfig): string[] {
+  return [
+    ...Object.values("env" in srv ? srv.env ?? {} : {}),
+    ...Object.values("headers" in srv ? srv.headers ?? {} : {}),
+    ...("oauth" in srv && srv.oauth?.clientSecret ? [srv.oauth.clientSecret] : []),
+  ];
 }
 
 type VisibilityCheck = { tool: { name: string; originalName: string }; clientFilter?: ToolFilter; locked: string[] };

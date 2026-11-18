@@ -1,3 +1,4 @@
+import net from "net";
 import { afterEach, describe, expect, test } from "bun:test";
 import { Aggregator, type AggregatorOptions } from "../src/aggregator.js";
 import type { Config } from "../src/config.js";
@@ -91,5 +92,84 @@ describe("wasNotDelivered", () => {
 
   test("a reset mid-request may have run the call", () => {
     expect(wasNotDelivered(new TypeError("fetch failed", { cause: new Error("read ECONNRESET") }))).toBe(false);
+  });
+});
+
+describe("refresh", () => {
+  test("a server announcing new tools is re-listed and the change reported", async () => {
+    const u = await upstream();
+    let changes = 0;
+    const agg = aggregator({ onToolsChanged: () => changes++ });
+    await agg.connect(config(u.port));
+    const before = changes;
+
+    u.addTool("added");
+    await eventually(() => agg.listTools().some((t) => t.name === "up__added"));
+    expect(changes).toBeGreaterThan(before);
+  });
+
+  test("a down server is reconnected now, without waiting out its backoff", async () => {
+    const reserved = await startUpstream();
+    await reserved.stop();
+    const agg = aggregator({ backoffBaseMs: 60_000, backoffCapMs: 60_000 });
+    await agg.connect(config(reserved.port));
+    expect(state(agg)).toBe("reconnecting");
+
+    await upstream({ port: reserved.port });
+    const [status] = await agg.refresh();
+    expect(status).toMatchObject({ name: "up", state: "connected" });
+    expect(agg.listTools().map((t) => t.name)).toContain("up__ping");
+  });
+
+  test("a connected server is re-read, not restarted", async () => {
+    const u = await upstream();
+    const agg = aggregator();
+    await agg.connect(config(u.port));
+    const connectedAt = agg.getStatus()[0].connectedAt;
+
+    const [status] = await agg.refresh({ servers: ["up"] });
+    expect(status).toMatchObject({ state: "connected", connectedAt });
+  });
+
+  test("a server named like unimcp's own tools is skipped", async () => {
+    const u = await upstream();
+    const agg = aggregator();
+    await agg.connect({ mcpServers: { unimcp: { type: "http", url: `http://127.0.0.1:${u.port}/mcp` } } } as Config);
+    expect(agg.getStatus()).toEqual([]);
+  });
+
+  test("a member is refreshed and reported only for a client holding its profile", async () => {
+    const u = await upstream();
+    const agg = aggregator();
+    const srv = { type: "http", url: `http://127.0.0.1:${u.port}/mcp` };
+    await agg.connect({ mcpServers: { up: srv }, profiles: { up: { a: { vars: {} }, b: { vars: {} } } } } as Config);
+
+    const statuses = await agg.refresh({ clientFilter: { grants: ["b"] } });
+    expect(statuses.map((s) => s.name)).toEqual(["up.b"]);
+  });
+
+  test("a refresh reports by its deadline while a hung server keeps connecting", async () => {
+    // Refuses at first (a server down), then accepts and never answers (one that hangs).
+    let isHanging = false;
+    const sockets: net.Socket[] = [];
+    const flaky = net.createServer((s) => (isHanging ? sockets.push(s) : s.destroy()));
+    await new Promise<void>((resolve) => flaky.listen(0, "127.0.0.1", resolve));
+    const port = (flaky.address() as net.AddressInfo).port;
+    try {
+      const agg = aggregator({ backoffBaseMs: 60_000, backoffCapMs: 60_000, refreshWaitMs: 50 });
+      await agg.connect(config(port));
+      isHanging = true;
+      const [status] = await agg.refresh();
+      expect(status.state).not.toBe("connected");
+    } finally {
+      for (const s of sockets) s.destroy();
+      flaky.close();
+    }
+  });
+
+  test("a failed $(command) is named in the error, not masked", async () => {
+    const agg = aggregator({ backoffBaseMs: 60_000, backoffCapMs: 60_000 });
+    await agg.connect({ mcpServers: { up: { type: "http", url: "http://127.0.0.1:1/mcp", headers: { "X-Key": "$(exit 3)" } } } } as Config);
+    expect(agg.getStatus()[0].lastError).toContain("$(exit 3) failed");
   });
 });
