@@ -92,10 +92,10 @@ describe("config grants", () => {
 
   test("a profile grant becomes a profile of its server", () => {
     const file = join(dir, "profile-grants.json");
-    const grants = { main: { server: "mongo", vars: { uri: "$(pw get main)" }, description: "ads" }, bp: { server: "mongo" }, ops: ["x__*"] };
+    const grants = { main: { server: "mongo", vars: { uri: "$(pw get main)" }, description: "ads" }, bp: { server: "mongo", granted: true }, ops: ["x__*"] };
     writeFileSync(file, JSON.stringify({ mcpServers: { mongo: { command: "m" } }, grants }));
     const config = loadConfig(file);
-    expect(config.profiles).toEqual({ mongo: { main: { vars: { uri: "$(pw get main)" }, description: "ads" }, bp: { vars: {} } } });
+    expect(config.profiles).toEqual({ mongo: { main: { vars: { uri: "$(pw get main)" }, description: "ads" }, bp: { vars: {}, granted: true } } });
     expect(config.grants).toEqual({ ops: ["x__*"] });
   });
 
@@ -108,9 +108,9 @@ describe("config grants", () => {
     delete process.env.UNIMCP_TEST_PROFILE_URI;
   });
 
-  test("rejects a profile grant with a bad name, server or vars", () => {
+  test("rejects a profile grant with a bad name, server, vars, description or granted", () => {
     const file = join(dir, "bad-profile-grants.json");
-    for (const grants of [{ "a.b": { server: "m" } }, { a: { server: "" } }, { a: { server: "m", vars: { x: 1 } } }, { a: { server: "m", description: 2 } }]) {
+    for (const grants of [{ "a.b": { server: "m" } }, { a: { server: "" } }, { a: { server: "m", vars: { x: 1 } } }, { a: { server: "m", description: 2 } }, { a: { server: "m", granted: "yes" } }]) {
       writeFileSync(file, JSON.stringify({ mcpServers: {}, grants }));
       expect(() => loadRawConfig(file)).toThrow(/grant/);
     }

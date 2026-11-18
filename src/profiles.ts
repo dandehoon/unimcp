@@ -15,6 +15,8 @@ export type ProfileGroup = {
   profiles: string[];
   /** Profile → what it is, for those the config describes. */
   descriptions: Record<string, string>;
+  /** Profiles every client holds without asking for the grant. */
+  granted: string[];
   /** The server's own config: its filters and pinned args apply to every member. */
   config: ServerConfig;
 };
@@ -29,7 +31,8 @@ export function expandProfiles(name: string, srv: ServerConfig, profiles: Record
   const names = Object.keys(profiles);
   const members = names.map((p) => ({ name: memberName(name, p), srv: fillVars(srv, profiles[p].vars, p) }));
   const descriptions = Object.fromEntries(names.flatMap((p) => (profiles[p].description ? [[p, profiles[p].description]] : [])));
-  return { group: { name, profiles: names, descriptions, config: srv }, members };
+  const granted = names.filter((p) => profiles[p].granted === true);
+  return { group: { name, profiles: names, descriptions, granted, config: srv }, members };
 }
 
 /** Finds a server by name, including a profile member (`server.profile`) — the name `unimcp auth` takes. */
