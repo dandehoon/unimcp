@@ -1,10 +1,9 @@
 import { Client, type Tool } from "@modelcontextprotocol/client";
-import { Minimatch } from "minimatch";
 import { type Config, type GrantRule, type Profile, type ServerConfig, type ToolFilter, isHttpServer } from "./config.js";
-import { GLOB_OPTS, lockedPatterns, lockingGrant } from "./grants.js";
+import { type NameMatcher, lockedPatterns, lockingGrant, nameGlob } from "./grants.js";
 import { PROFILE_ARG, type ProfileGroup, expandProfiles, routeProfile, takesProfileArg, withProfileArg, withoutPinnedArgs } from "./profiles.js";
 import { AuthRequiredError } from "./oauth.js";
-import { type Catalog, type Content, EMPTY_CONTENT, listCatalog } from "./catalog.js";
+import { type Content, EMPTY_CONTENT, listContent } from "./catalog.js";
 import { substituteCommands } from "./substitute.js";
 import { type Connected, StillStarting, connectStdio, withDetail } from "./stdio.js";
 import { buildSSETransport, buildTransport, isAuthError, isTimeout, isTransportError, wasNotDelivered, withTimeout } from "./transport.js";
@@ -88,22 +87,27 @@ type AggregatedTool = Tool & { upstreamName: string; originalName: string };
 /** `what`: names the request in a timeout error. */
 type SendOptions<T> = { run: (client: Client) => Promise<T>; group?: ProfileGroup; what: string };
 
+/** What an upstream lists, re-read apart: a slow resource listing must not hold up its tools. */
+type Listing = "tools" | "content";
+type Relist = { again: boolean; done: Promise<void> };
+
 /**
- * A connected upstream whose resources and skills a client may see: a plain server, or a profile
- * member whose profile the client holds. `name` is the one its skill URIs carry; `isVisible` judges
- * an item by name, as a tool of that name would be.
+ * An upstream whose resources and skills a client may see: a plain server, or a profile member
+ * whose profile the client holds. `name` is the one its skill URIs carry. `skillsOnly`: a member or
+ * a server with `pinArgs` — its other URIs reach past what its profile or pinned values confine
+ * its tools to. `isVisible` judges an item by name, as a tool of that name would be.
  */
-export type ContentSource = { name: string; isMember: boolean; content: Content; isVisible: (itemName: string) => boolean };
+export type ContentSource = { name: string; skillsOnly: boolean; content: Content; isVisible: (itemName: string) => boolean };
 
-const MATCH_ALL = [new Minimatch("*", { dot: true })];
-const MATCH_NONE: Minimatch[] = [];
-const patternCache = new Map<string, Minimatch[]>();
+const MATCH_ALL: NameMatcher[] = [() => true];
+const MATCH_NONE: NameMatcher[] = [];
+const patternCache = new Map<string, NameMatcher[]>();
 
-function compilePatterns(patterns: string[]): Minimatch[] {
+function compilePatterns(patterns: string[]): NameMatcher[] {
   const key = patterns.join("\0");
   let compiled = patternCache.get(key);
   if (!compiled) {
-    compiled = patterns.map((p) => new Minimatch(p, GLOB_OPTS));
+    compiled = patterns.map(nameGlob);
     patternCache.set(key, compiled);
   }
   return compiled;
@@ -113,7 +117,7 @@ function compilePatterns(patterns: string[]): Minimatch[] {
 export function matchesFilter(toolName: string, filter?: ToolFilter): boolean {
   const include = filter?.include ? compilePatterns(filter.include) : MATCH_ALL;
   const exclude = filter?.exclude ? compilePatterns(filter.exclude) : MATCH_NONE;
-  return include.some((m) => m.match(toolName)) && !exclude.some((m) => m.match(toolName));
+  return include.some((m) => m(toolName)) && !exclude.some((m) => m(toolName));
 }
 
 export class Aggregator {
@@ -124,7 +128,7 @@ export class Aggregator {
   private groups = new Map<string, ProfileGroup>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private pendingReconnects = new Map<string, Promise<void>>();
-  private relists = new Map<Client, { again: boolean; done: Promise<void> }>();
+  private relists: Record<Listing, Map<Client, Relist>> = { tools: new Map(), content: new Map() };
   private expandedValues: string[] = [];
 
   constructor(private readonly opts: AggregatorOptions = {}) {}
@@ -196,47 +200,61 @@ export class Aggregator {
     entry.reconnectAttempts = 0;
     if (previous !== result.client) void previous.close().catch(() => {});
     this.watchClient(entry, result.client);
-    this.setCatalog(entry, result.catalog);
+    this.setTools(entry, result.tools);
+    // Detached: the server is usable on its tools alone, and says so when its content arrives.
+    void this.relist(entry, result.client, "content");
     return true;
   }
 
-  /** Takes what a server lists, telling clients what changed. */
-  private setCatalog(entry: UpstreamEntry, { tools, content }: Catalog): void {
+  /** Takes the tools a server lists, telling clients when they changed. */
+  private setTools(entry: UpstreamEntry, tools: Tool[]): void {
     const before = JSON.stringify(entry.tools);
     entry.tools = tools.filter((t) => matchesFilter(t.name, serverFilter(entry.config)));
-    if (JSON.stringify(entry.tools) !== before) {
-      this.invalidateCache();
-      this.opts.onToolsChanged?.();
-    }
+    if (JSON.stringify(entry.tools) === before) return;
+    this.invalidateCache();
+    this.opts.onToolsChanged?.();
+  }
+
+  private setContent(entry: UpstreamEntry, content: Content): void {
     if (JSON.stringify(content) === JSON.stringify(entry.content)) return;
     entry.content = content;
     this.opts.onResourcesChanged?.();
   }
 
-  /** One re-read in flight per client; changes announced meanwhile get a single one after it, so the last answer is the newest. */
-  private relist(entry: UpstreamEntry, client: Client): Promise<void> {
-    const inFlight = this.relists.get(client);
+  /** One re-read in flight per client and listing; changes announced meanwhile get a single one after it, so the last answer is the newest. */
+  private relist(entry: UpstreamEntry, client: Client, listing: Listing): Promise<void> {
+    const relists = this.relists[listing];
+    const inFlight = relists.get(client);
     if (inFlight) {
       inFlight.again = true;
       return inFlight.done;
     }
-    const run = { again: false, done: Promise.resolve() };
+    const run: Relist = { again: false, done: Promise.resolve() };
     run.done = (async () => {
       do {
         run.again = false;
-        await this.relistOnce(entry, client);
+        await this.relistOnce(entry, client, listing);
       } while (run.again);
-    })().finally(() => this.relists.delete(client));
-    this.relists.set(client, run);
+    })().finally(() => relists.delete(client));
+    relists.set(client, run);
     return run.done;
   }
 
-  /** Re-reads a connected server's tools; one found gone meanwhile is marked down and retried. */
-  private async relistOnce(entry: UpstreamEntry, client: Client): Promise<void> {
+  /**
+   * Re-reads a connected server's tools or content; one found gone meanwhile is marked down and
+   * retried. Content that fails to list keeps what was listed last.
+   */
+  private async relistOnce(entry: UpstreamEntry, client: Client, listing: Listing): Promise<void> {
     const isLive = () => entry.client === client && entry.state === "connected";
+    const label = `[${entry.name}]`;
     try {
-      const catalog = await listWithin(client, `[${entry.name}]`);
-      if (isLive()) this.setCatalog(entry, catalog);
+      if (listing === "tools") {
+        const tools = await listToolsWithin(client, label);
+        if (isLive()) this.setTools(entry, tools);
+      } else {
+        const content = await withTimeout(listContent(client, label), CONNECT_TIMEOUT_MS, `${label} resource listing timed out`);
+        if (isLive()) this.setContent(entry, content);
+      }
     } catch (err) {
       // A replaced or closed client's failure says nothing about the server: its successor reports for it.
       if (!isLive()) return;
@@ -245,7 +263,7 @@ export class Aggregator {
         this.scheduleReconnect(entry.name);
         return;
       }
-      log(`[${entry.name}] listing failed:`, this.masked(entry, err));
+      log(`[${entry.name}] listing ${listing} failed:`, this.masked(entry, err));
     }
   }
 
@@ -308,9 +326,9 @@ export class Aggregator {
     };
     client.onerror = onDown;
     client.onclose = () => onDown();
-    client.setNotificationHandler("notifications/tools/list_changed", () => this.relist(entry, client));
+    client.setNotificationHandler("notifications/tools/list_changed", () => this.relist(entry, client, "tools"));
     // Skills have no notice of their own: a server whose skills change says its resources did.
-    client.setNotificationHandler("notifications/resources/list_changed", () => this.relist(entry, client));
+    client.setNotificationHandler("notifications/resources/list_changed", () => this.relist(entry, client, "content"));
   }
 
   private masked(entry: UpstreamEntry, err: unknown): string {
@@ -472,15 +490,18 @@ export class Aggregator {
     }
   }
 
-  /** Connected upstreams whose resources and skills this client may see, in config order. */
+  /**
+   * Upstreams whose resources and skills this client may see, in config order: by what each listed
+   * last, as tools are, so a read of a server that is down still reaches `send`'s reconnect.
+   */
   contentSources(clientFilter?: ToolFilter): ContentSource[] {
     const held = this.heldGrants(clientFilter);
     const locked = lockedPatterns(this.grants, held);
     return [...this.upstreams.values()]
-      .filter((e) => e.state === "connected" && (!e.group || held.has(e.name.slice(e.group.length + 1))))
+      .filter((e) => isHeldBy(e, held))
       .map((e) => ({
         name: e.name,
-        isMember: Boolean(e.group),
+        skillsOnly: Boolean(e.group || e.config.pinArgs),
         content: e.content,
         // Grants name a group's items by the group, as they do its tools.
         isVisible: (item: string) => matchesFilter(item, serverFilter(e.config))
@@ -544,9 +565,7 @@ export class Aggregator {
    */
   async refresh({ servers, clientFilter }: RefreshOptions = {}): Promise<UpstreamStatus[]> {
     const held = this.heldGrants(clientFilter);
-    // A member counts only for a client holding its profile: the others aren't this client's to see or start.
-    const targets = [...this.upstreams.values()].filter((e) => (!servers || servers.includes(e.group ?? e.name))
-      && (!e.group || held.has(e.name.slice(e.group.length + 1))));
+    const targets = [...this.upstreams.values()].filter((e) => (!servers || servers.includes(e.group ?? e.name)) && isHeldBy(e, held));
     const lanes = Map.groupBy(targets, (e) => e.group ?? e.name);
     const work = Promise.all([...lanes.values()].map(async (lane) => {
       for (const entry of lane) await this.refreshEntry(entry);
@@ -559,7 +578,7 @@ export class Aggregator {
   }
 
   private async refreshEntry(entry: UpstreamEntry): Promise<void> {
-    if (entry.state === "connected") await this.relist(entry, entry.client);
+    if (entry.state === "connected") await Promise.all([this.relist(entry, entry.client, "tools"), this.relist(entry, entry.client, "content")]);
     if (entry.state !== "failed" && entry.state !== "reconnecting") return;
     if (this.startingConflict(entry, entry.group ? this.groups.get(entry.group) : undefined)) return;
     await this.retryIfDown(entry.name);
@@ -619,7 +638,7 @@ export class Aggregator {
     const transport = buildTransport(name, srv);
     try {
       await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] connect timed out`);
-      return { client, catalog: await listWithin(client, `[${name}]`) };
+      return { client, tools: await listToolsWithin(client, `[${name}]`) };
     } catch (err) {
       try { await client.close(); } catch { /* ignore */ }
       if (isHttpServer(srv) && !isAuthError(err)) return this.connectViaSSE(name, srv);
@@ -633,9 +652,9 @@ export class Aggregator {
     const transport = buildSSETransport(name, srv);
     try {
       await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] SSE connect timed out`);
-      const catalog = await listWithin(client, `[${name}] SSE`);
+      const tools = await listToolsWithin(client, `[${name}] SSE`);
       log(`[${name}] connected via SSE fallback`);
-      return { client, catalog };
+      return { client, tools };
     } catch (err) {
       try { await client.close(); } catch { /* ignore */ }
       throw err;
@@ -692,8 +711,13 @@ function blankEntry(name: string, config: ServerConfig, state: "failed" | "idle"
   };
 }
 
-function listWithin(client: Client, label: string): Promise<Catalog> {
-  return withTimeout(listCatalog(client, label), CONNECT_TIMEOUT_MS, `${label} listing timed out`);
+async function listToolsWithin(client: Client, label: string): Promise<Tool[]> {
+  return (await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `${label} listing timed out`)).tools;
+}
+
+/** A profile member counts only for a client holding its profile: the others aren't this client's to see or start. */
+function isHeldBy(entry: UpstreamEntry, held: Set<string>): boolean {
+  return !entry.group || held.has(entry.name.slice(entry.group.length + 1));
 }
 
 /** The values `$(command)` and the config filled into a server's credentials. */
@@ -708,7 +732,7 @@ function resolvedSecrets(srv: ServerConfig): string[] {
 type VisibilityCheck = { tool: { name: string; originalName: string }; clientFilter?: ToolFilter; locked: string[] };
 
 function isVisibleToClient({ tool, clientFilter, locked }: VisibilityCheck): boolean {
-  return matchesFilter(tool.originalName, clientFilter) && !compilePatterns(locked).some((m) => m.match(tool.name));
+  return matchesFilter(tool.originalName, clientFilter) && !compilePatterns(locked).some((m) => m(tool.name));
 }
 
 function serverFilter(srv: ServerConfig): ToolFilter | undefined {

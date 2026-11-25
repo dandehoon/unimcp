@@ -8,6 +8,7 @@ import { ensureDaemon } from "./daemon.js";
 import { heldGrants, watchGrantsFiles } from "./grants.js";
 import { REFRESH_TOOL } from "./refresh.js";
 import { clientGrantsPath, isOwnGrantsFile, processStartMs } from "./client-grants.js";
+import { isTimeout } from "./transport.js";
 import { log, MCP_SERVER_IDENTITY } from "./utils.js";
 
 export type BridgeOptions = {
@@ -103,41 +104,29 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
       await serialized(syncGrants);
       return await fn();
     } catch (err) {
-      if (err instanceof ProtocolError) throw err;
-      if (!isTransportError(err)) throw err;
+      // The daemon's own answer, or a request that timed out and may still be running: neither is safe to send again.
+      if (err instanceof ProtocolError || isTimeout(err) || !isTransportError(err)) throw err;
       await serialized(reconnect);
       return await fn();
     }
   }
 
-  server.setRequestHandler("tools/list", async () => {
+  /** Sends a request on to the daemon; any failure but the daemon's own protocol error is wrapped, naming the request. */
+  async function forward<T>(what: string, fn: () => Promise<T>): Promise<T> {
     try {
-      const result = await withReconnect(() => client.listTools());
-      return { tools: result.tools };
+      return await withReconnect(fn);
     } catch (err) {
       if (err instanceof ProtocolError) throw err;
-      throw new ProtocolError(ProtocolErrorCode.InternalError, `[bridge] listTools failed: ${String(err)}`);
+      throw new ProtocolError(ProtocolErrorCode.InternalError, `[bridge] ${what} failed: ${String(err)}`);
     }
-  });
+  }
 
-  server.setRequestHandler("tools/call", async (req) => {
+  server.setRequestHandler("tools/list", async () => ({ tools: (await forward("listTools", () => client.listTools())).tools }));
+  server.setRequestHandler("tools/call", (req) => {
     const { name, arguments: args } = req.params;
-    try {
-      return await withReconnect(() => client.callTool({ name, arguments: args ?? {} }));
-    } catch (err) {
-      if (err instanceof ProtocolError) throw err;
-      throw new ProtocolError(ProtocolErrorCode.InternalError, `[bridge] callTool failed: ${String(err)}`);
-    }
+    return forward("callTool", () => client.callTool({ name, arguments: args ?? {} }));
   });
-
-  forwardContent(server, async (run) => {
-    try {
-      return await withReconnect(() => run(client));
-    } catch (err) {
-      if (err instanceof ProtocolError) throw err;
-      throw new ProtocolError(ProtocolErrorCode.InternalError, `[bridge] request failed: ${String(err)}`);
-    }
-  });
+  forwardContent(server, (run) => forward("request", () => run(client)));
 
   const stdioTransport = new StdioServerTransport();
   await server.connect(stdioTransport);

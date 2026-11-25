@@ -6,7 +6,17 @@ import type { GrantRule } from "./config.js";
 import { readFileSafe, splitCommaSeparated } from "./utils.js";
 
 // Patterns are literal globs: no `!` negation (which would invert a grant lock) and no `#` comments.
-export const GLOB_OPTS = { nonegate: true, nocomment: true, dot: true };
+const GLOB_OPTS = { nonegate: true, nocomment: true, dot: true };
+/** Stands in for `/`, which globs treat as a path separator: in a name it is a plain character `*` matches. */
+const SLASH = "\u2215";
+
+export type NameMatcher = (name: string) => boolean;
+
+/** A tool or resource name glob, where `*` spans `/` too (`docs/*` and `*` both match `docs/a/b`). */
+export function nameGlob(pattern: string): NameMatcher {
+  const glob = new Minimatch(pattern.replaceAll("/", SLASH), GLOB_OPTS);
+  return (name) => glob.match(name.replaceAll("/", SLASH));
+}
 
 /**
  * Grants a bridge holds: the comma list in `envList` (fixed at launch) plus one per line
@@ -40,7 +50,7 @@ export function lockingGrant(grants: Record<string, GrantRule[]> | undefined, he
 }
 
 function matchesArgRule(rule: Exclude<GrantRule, string>, call: GrantedCall): boolean {
-  return new Minimatch(rule.tool, GLOB_OPTS).match(call.name) &&
+  return nameGlob(rule.tool)(call.name) &&
     Object.entries(rule.args).every(([k, v]) => call.args[k] === v);
 }
 

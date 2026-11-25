@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "crypto";
 import { mkdirSync, renameSync } from "fs";
 import path from "path";
 import { watch } from "chokidar";
-import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthClientProvider, OAuthDiscoveryState, OAuthTokens } from "@modelcontextprotocol/client";
+import type { OAuthClientInformationContext, OAuthClientInformationMixed, OAuthClientMetadata, OAuthClientProvider, OAuthDiscoveryState, OAuthTokens } from "@modelcontextprotocol/client";
 import { CONFIG_DIR, type OAuthServer } from "./config.js";
 import { parseJsonSafe, readFileSafe, writeFileSafe, toJson, PERMS_PRIVATE } from "./utils.js";
 
@@ -68,7 +68,7 @@ export function watchTokenStore(onChange: (name: string) => void): () => Promise
 export class FileOAuthProvider implements OAuthClientProvider {
   readonly expectedState = randomBytes(16).toString("hex");
   private verifier = "";
-  // Kept as long as the verifier: it binds the code coming back to the authorization server that issued it.
+  // Binds the code coming back to the authorization server that issued it; kept for this provider's life.
   private discovery?: OAuthDiscoveryState;
   private readonly file: string;
   private hasSavedTokens = false;
@@ -108,16 +108,19 @@ export class FileOAuthProvider implements OAuthClientProvider {
     return this.expectedState;
   }
 
-  clientInformation(): OAuthClientInformationMixed | undefined {
+  /** A configured client is stamped with the issuer asked for, so the SDK has no reason to save it. */
+  clientInformation(ctx?: OAuthClientInformationContext): OAuthClientInformationMixed | undefined {
     const { clientId, clientSecret } = this.opts.srv.oauth ?? {};
-    if (clientId) return { client_id: clientId, client_secret: clientSecret };
+    if (clientId) return { client_id: clientId, client_secret: clientSecret, ...(ctx && { issuer: ctx.issuer }) };
     // A registration made for another callbackPort would fail the redirect check; register anew.
     const { client } = this.read();
     const registered = client && "redirect_uris" in client ? client.redirect_uris : undefined;
     return registered && !registered.includes(this.redirectUrl) ? undefined : client;
   }
 
+  /** Only a registration is ours to keep: the config's client, secret included, never reaches the store. */
   saveClientInformation(client: OAuthClientInformationMixed): void {
+    if (this.opts.srv.oauth?.clientId) return;
     this.write({ ...this.read(), client });
   }
 

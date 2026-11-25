@@ -30,7 +30,7 @@ function buildMcpServer({ aggregator, signIns, clientFilter }: McpServerDeps): S
     MCP_SERVER_IDENTITY,
     { capabilities: { tools: { listChanged: true }, ...CONTENT_CAPABILITIES } }
   );
-  serveContent(server, { aggregator, clientFilter });
+  serveContent(server, { aggregator, clientFilter, signInError: (name) => signInError({ aggregator, signIns, server: name }) });
 
   server.setRequestHandler("tools/list", async () => ({
     tools: [...aggregator.listTools(clientFilter).map(({ upstreamName: _u, originalName: _o, ...tool }) => tool), REFRESH_TOOL],

@@ -7,10 +7,12 @@ import type { ContentSource } from "./aggregator.js";
 // A `skill://` URI gains its server as the first path segment (`skill://<server>/<path>`), so two
 // servers' skills never collide; the skill's own path, its last segment (its name), its relative
 // references and its bytes stay as served. Any other URI passes unchanged: the first server in
-// config order listing it serves it. A profile member's URIs are its skills' only — its other
-// URIs are the same for every profile, with no way to tell which one a client means.
+// config order listing it serves it. A `skillsOnly` source serves its skills alone: a profile
+// member's other URIs are the same for every profile, and a pinned server's reach past its pins.
 
 const SKILL_SCHEME = "skill://";
+/** A `.` or `..` segment, as typed or percent-encoded: the upstream resolves it, stepping out of what was judged. */
+const DOT_SEGMENT = /(?:^|\/)(?:\.|%2e){1,2}(?:[/?#]|$)/i;
 
 export type Route = { source: ContentSource; uri: string };
 
@@ -39,6 +41,7 @@ export function listSkills(sources: ContentSource[]): Skill[] {
  * matches — so a client can't reach past what it may see.
  */
 export function route(sources: ContentSource[], clientUri: string): Route | undefined {
+  if (DOT_SEGMENT.test(clientUri)) return undefined;
   if (clientUri.startsWith(SKILL_SCHEME)) {
     const rest = clientUri.slice(SKILL_SCHEME.length);
     const slash = rest.indexOf("/");
@@ -46,7 +49,7 @@ export function route(sources: ContentSource[], clientUri: string): Route | unde
     const uri = `${SKILL_SCHEME}${rest.slice(slash + 1)}`;
     return source && isOwnedVisible(source, uri) ? { source, uri } : undefined;
   }
-  const source = sources.find((s) => !s.isMember && isOwnedVisible(s, clientUri));
+  const source = sources.find((s) => !s.skillsOnly && isOwnedVisible(s, clientUri));
   return source ? { source, uri: clientUri } : undefined;
 }
 
@@ -68,7 +71,7 @@ function toClientUri(server: string, uri: string): string {
 }
 
 function isServed(source: ContentSource, uri: string): boolean {
-  return !source.isMember || uri.startsWith(SKILL_SCHEME);
+  return !source.skillsOnly || uri.startsWith(SKILL_SCHEME);
 }
 
 function isOwnedVisible(source: ContentSource, uri: string): boolean {

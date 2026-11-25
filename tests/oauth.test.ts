@@ -44,6 +44,15 @@ describe("FileOAuthProvider", () => {
     expect(provider.redirectUrl).toBe("http://localhost:3118/callback");
   });
 
+  test("a configured client comes stamped with the issuer asked for, and is never stored", () => {
+    const dir = newDir();
+    const provider = new FileOAuthProvider({ name: "slack", srv: SLACK, dir });
+    const stamped = provider.clientInformation({ issuer: "https://as.example" });
+    expect(stamped).toEqual({ client_id: "123.456", client_secret: "s3cret", issuer: "https://as.example" });
+    provider.saveClientInformation(stamped!);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
   test("invalidating tokens keeps the registration", () => {
     const provider = new FileOAuthProvider({ name: "x", srv: { url: "https://x.example/mcp", auth: "oauth" }, dir: newDir() });
     provider.saveClientInformation({ client_id: "dcr-id" });

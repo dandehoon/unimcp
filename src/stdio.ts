@@ -1,13 +1,12 @@
-import { Client } from "@modelcontextprotocol/client";
+import { Client, type Tool } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { type Catalog, listCatalog } from "./catalog.js";
 import type { ServerConfig } from "./config.js";
 import { buildTransport } from "./transport.js";
 import { maskSecrets } from "./utils.js";
 
 // Starting a local (stdio) upstream: no kill deadline, and its stderr kept for the error if it dies.
 
-export type Connected = { client: Client; catalog: Catalog };
+export type Connected = { client: Client; tools: Tool[] };
 
 /** A local server outlived the start deadline but is still running; `ready` settles when it answers or exits. */
 export class StillStarting extends Error {
@@ -37,9 +36,9 @@ export async function connectStdio({ name, srv, client, deadlineMs, secrets }: S
   const stderr = stderrTail(transport, secrets);
   const ready = (async () => {
     await client.connect(transport);
-    const catalog = await listCatalog(client, `[${name}]`);
+    const { tools } = await client.listTools();
     stderr.stop();
-    return { client, catalog };
+    return { client, tools };
   })().catch(async (err) => {
     try { await client.close(); } catch { /* ignore */ }
     throw withStderr(err, stderr.read());

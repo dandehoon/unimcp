@@ -5,8 +5,9 @@ import {
   SKILLS_EXTENSION_ID, SKILLS_GET_METHOD, SKILLS_LIST_METHOD,
 } from "@modelcontextprotocol/core/ext/skills";
 import { ProtocolError, ProtocolErrorCode, type Server, type ServerCapabilities } from "@modelcontextprotocol/server";
-import type { Aggregator } from "./aggregator.js";
+import type { Aggregator, ContentSource } from "./aggregator.js";
 import type { ToolFilter } from "./config.js";
+import { AuthRequiredError } from "./oauth.js";
 import { type Route, listResources, listSkills, listTemplates, route, toClientRead, toClientSkill } from "./resources.js";
 
 // Resources and skills (SEP-2640) on unimcp's own servers: the daemon serves them, the bridge forwards them.
@@ -22,12 +23,19 @@ const CACHE_HINT = { ttlMs: 0, cacheScope: "private" } as const;
 const LIST_SKILLS = { params: ListSkillsRequestParamsSchema, result: ListSkillsResultSchema };
 const GET_SKILL = { params: GetSkillRequestParamsSchema, result: GetSkillResultSchema };
 
-type ServeOptions = { aggregator: Aggregator; clientFilter?: ToolFilter };
+/** `signInError`: what to answer for a server down until the user signs in, as a tool call to it gets. */
+type ServeOptions = { aggregator: Aggregator; clientFilter?: ToolFilter; signInError: (server: string) => Promise<ProtocolError> };
 
 /** The daemon's handlers: each lists from the cached catalogs and reads from the upstream that owns the URI. */
-export function serveContent(server: Server, { aggregator, clientFilter }: ServeOptions): void {
+export function serveContent(server: Server, { aggregator, clientFilter, signInError }: ServeOptions): void {
   const sources = () => aggregator.contentSources(clientFilter);
-  const send = <T>(target: Route, run: (client: Client) => Promise<T>) => upstreamErrors(aggregator.request(target.source.name, run));
+  const send = async <T>(target: Route, run: (client: Client) => Promise<T>): Promise<T> => {
+    try {
+      return await aggregator.request(target.source.name, run);
+    } catch (err) {
+      throw await upstreamError(err, signInError);
+    }
+  };
 
   server.setRequestHandler("resources/list", async () => ({ resources: listResources(sources()) }));
   server.setRequestHandler("resources/templates/list", async () => ({ resourceTemplates: listTemplates(sources()) }));
@@ -57,18 +65,15 @@ export function forwardContent(server: Server, send: <T>(run: (client: Client) =
 // --- helpers ---
 
 /** -32602, as the extension asks for an unknown skill or file: one this client may not see is unknown to it. */
-function routeOrThrow(uri: string, sources: ReturnType<Aggregator["contentSources"]>): Route {
+function routeOrThrow(uri: string, sources: ContentSource[]): Route {
   const target = route(sources, uri);
   if (!target) throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Resource not available to this client: ${uri}`);
   return target;
 }
 
 /** An upstream's protocol error (an unknown URI) reaches the client as it is; anything else is ours to wrap. */
-async function upstreamErrors<T>(pending: Promise<T>): Promise<T> {
-  try {
-    return await pending;
-  } catch (err) {
-    if (err instanceof ProtocolError) throw err;
-    throw new ProtocolError(ProtocolErrorCode.InternalError, String(err));
-  }
+async function upstreamError(err: unknown, signInError: ServeOptions["signInError"]): Promise<ProtocolError> {
+  if (err instanceof ProtocolError) return err;
+  if (err instanceof AuthRequiredError) return signInError(err.server);
+  return new ProtocolError(ProtocolErrorCode.InternalError, String(err));
 }
