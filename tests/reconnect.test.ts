@@ -2,6 +2,7 @@ import net from "net";
 import { afterEach, describe, expect, test } from "bun:test";
 import { Aggregator, type AggregatorOptions } from "../src/aggregator.js";
 import type { Config } from "../src/config.js";
+import { route } from "../src/resources.js";
 import { wasNotDelivered } from "../src/transport.js";
 import { startUpstream, type Upstream } from "./fixtures/http-upstream.js";
 
@@ -106,6 +107,39 @@ describe("refresh", () => {
     u.addTool("added");
     await eventually(() => agg.listTools().some((t) => t.name === "up__added"));
     expect(changes).toBeGreaterThan(before);
+  });
+
+  test("a server announcing new resources has its content re-listed, its tools left alone", async () => {
+    const u = await upstream();
+    let toolChanges = 0;
+    let resourceChanges = 0;
+    const agg = aggregator({ onToolsChanged: () => toolChanges++, onResourcesChanged: () => resourceChanges++ });
+    await agg.connect(config(u.port));
+    const before = { tools: toolChanges, resources: resourceChanges };
+
+    u.addResource("added");
+    await eventually(() => route(agg.contentSources(), "note://added") !== undefined);
+    expect(resourceChanges).toBeGreaterThan(before.resources);
+    expect(toolChanges).toBe(before.tools);
+  });
+
+  test("a down server's resources still route, and reading one reconnects it", async () => {
+    const first = await upstream();
+    first.addResource("kept");
+    const agg = aggregator({ backoffBaseMs: 60_000, backoffCapMs: 60_000 });
+    await agg.connect(config(first.port));
+    await eventually(() => route(agg.contentSources(), "note://kept") !== undefined);
+
+    await first.stop();
+    await eventually(() => state(agg) !== "connected");
+    const target = route(agg.contentSources(), "note://kept");
+    expect(target?.source.name).toBe("up");
+
+    const restarted = await upstream({ port: first.port });
+    restarted.addResource("kept");
+    const read = await agg.request("up", (c) => c.readResource({ uri: "note://kept" }));
+    expect(read.contents[0]).toMatchObject({ text: "kept" });
+    expect(state(agg)).toBe("connected");
   });
 
   test("a down server is reconnected now, without waiting out its backoff", async () => {
