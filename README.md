@@ -5,6 +5,7 @@ A local MCP aggregator: define every MCP server once, and every client (Claude C
 - **One config** in the standard `mcpServers` format — an existing client config works as-is.
 - **One daemon** owns the upstream connections: it starts on first use, hot-reloads the config, and exits 30 s after the last client leaves, taking its stdio servers and containers with it.
 - **Per-client control**: each client filters the tools it sees, and unlocks gated tools with grants.
+- **Resources and skills** pass through too, [MCP skills](https://modelcontextprotocol.io/extensions/skills/overview) included: a server's skills appear as `skill://<server>/…`, and each resource or skill is filtered and granted like a tool of the same name.
 
 ## Quick start
 

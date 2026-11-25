@@ -1,7 +1,7 @@
 import http from "http";
 import { randomBytes } from "crypto";
 import readline from "readline";
-import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
+import { auth } from "@modelcontextprotocol/client";
 import type { FileOAuthProvider } from "./oauth.js";
 import { log } from "./utils.js";
 

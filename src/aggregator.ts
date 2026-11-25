@@ -1,10 +1,10 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { ToolListChangedNotificationSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
+import { Client, type Tool } from "@modelcontextprotocol/client";
 import { Minimatch } from "minimatch";
 import { type Config, type GrantRule, type Profile, type ServerConfig, type ToolFilter, isHttpServer } from "./config.js";
 import { GLOB_OPTS, lockedPatterns, lockingGrant } from "./grants.js";
 import { PROFILE_ARG, type ProfileGroup, expandProfiles, routeProfile, takesProfileArg, withProfileArg, withoutPinnedArgs } from "./profiles.js";
 import { AuthRequiredError } from "./oauth.js";
+import { type Catalog, type Content, EMPTY_CONTENT, listCatalog } from "./catalog.js";
 import { substituteCommands } from "./substitute.js";
 import { type Connected, StillStarting, connectStdio, withDetail } from "./stdio.js";
 import { buildSSETransport, buildTransport, isAuthError, isTimeout, isTransportError, wasNotDelivered, withTimeout } from "./transport.js";
@@ -28,6 +28,7 @@ export const REFRESH_WAIT_MS = 45_000;
  * `startDeadlineMs`: how long a connect waits on a local server before leaving it `starting`.
  * `startGiveUpMs`: how long it may stay `starting` before it counts as hung and is stopped.
  * `onToolsChanged`: called when a server's listed tools change, e.g. one that was down comes up.
+ * `onResourcesChanged`: the same for its resources, resource templates and skills.
  */
 export type AggregatorOptions = {
   startDeadlineMs?: number;
@@ -37,6 +38,7 @@ export type AggregatorOptions = {
   callTimeoutMs?: number;
   refreshWaitMs?: number;
   onToolsChanged?: () => void;
+  onResourcesChanged?: () => void;
 };
 
 /** `resolve`: the config with its `$(command)`s run, and the masking its errors need; it throws masked too. */
@@ -67,6 +69,7 @@ type UpstreamEntry = {
   name: string;
   client: Client;
   tools: Tool[];
+  content: Content;
   config: ServerConfig;
   state: UpstreamState;
   connectedAt: number | null;
@@ -81,6 +84,16 @@ type UpstreamEntry = {
 };
 
 type AggregatedTool = Tool & { upstreamName: string; originalName: string };
+
+/** `what`: names the request in a timeout error. */
+type SendOptions<T> = { run: (client: Client) => Promise<T>; group?: ProfileGroup; what: string };
+
+/**
+ * A connected upstream whose resources and skills a client may see: a plain server, or a profile
+ * member whose profile the client holds. `name` is the one its skill URIs carry; `isVisible` judges
+ * an item by name, as a tool of that name would be.
+ */
+export type ContentSource = { name: string; isMember: boolean; content: Content; isVisible: (itemName: string) => boolean };
 
 const MATCH_ALL = [new Minimatch("*", { dot: true })];
 const MATCH_NONE: Minimatch[] = [];
@@ -183,17 +196,21 @@ export class Aggregator {
     entry.reconnectAttempts = 0;
     if (previous !== result.client) void previous.close().catch(() => {});
     this.watchClient(entry, result.client);
-    this.setTools(entry, result.tools);
+    this.setCatalog(entry, result.catalog);
     return true;
   }
 
-  /** Takes a server's listed tools, telling clients when they changed. */
-  private setTools(entry: UpstreamEntry, tools: Tool[]): void {
+  /** Takes what a server lists, telling clients what changed. */
+  private setCatalog(entry: UpstreamEntry, { tools, content }: Catalog): void {
     const before = JSON.stringify(entry.tools);
     entry.tools = tools.filter((t) => matchesFilter(t.name, serverFilter(entry.config)));
-    if (JSON.stringify(entry.tools) === before) return;
-    this.invalidateCache();
-    this.opts.onToolsChanged?.();
+    if (JSON.stringify(entry.tools) !== before) {
+      this.invalidateCache();
+      this.opts.onToolsChanged?.();
+    }
+    if (JSON.stringify(content) === JSON.stringify(entry.content)) return;
+    entry.content = content;
+    this.opts.onResourcesChanged?.();
   }
 
   /** One re-read in flight per client; changes announced meanwhile get a single one after it, so the last answer is the newest. */
@@ -218,8 +235,8 @@ export class Aggregator {
   private async relistOnce(entry: UpstreamEntry, client: Client): Promise<void> {
     const isLive = () => entry.client === client && entry.state === "connected";
     try {
-      const tools = await listToolsWithin(client, `[${entry.name}]`);
-      if (isLive()) this.setTools(entry, tools);
+      const catalog = await listWithin(client, `[${entry.name}]`);
+      if (isLive()) this.setCatalog(entry, catalog);
     } catch (err) {
       // A replaced or closed client's failure says nothing about the server: its successor reports for it.
       if (!isLive()) return;
@@ -228,7 +245,7 @@ export class Aggregator {
         this.scheduleReconnect(entry.name);
         return;
       }
-      log(`[${entry.name}] listing tools failed:`, this.masked(entry, err));
+      log(`[${entry.name}] listing failed:`, this.masked(entry, err));
     }
   }
 
@@ -291,7 +308,9 @@ export class Aggregator {
     };
     client.onerror = onDown;
     client.onclose = () => onDown();
-    client.setNotificationHandler(ToolListChangedNotificationSchema, () => this.relist(entry, client));
+    client.setNotificationHandler("notifications/tools/list_changed", () => this.relist(entry, client));
+    // Skills have no notice of their own: a server whose skills change says its resources did.
+    client.setNotificationHandler("notifications/resources/list_changed", () => this.relist(entry, client));
   }
 
   private masked(entry: UpstreamEntry, err: unknown): string {
@@ -420,21 +439,53 @@ export class Aggregator {
 
     const upstream = this.upstreams.get(upstreamName);
     if (!upstream || (upstream.group && !group)) throw new Error(`Unknown upstream: ${upstreamName}`);
+    // Pinned last: the client can't override what the config fixes.
+    const call = (client: Client) => client.callTool({ name: toolName, arguments: { ...args, ...upstream.config.pinArgs } });
+    return this.send(upstream, { run: call, group, what: "callTool" });
+  }
+
+  /** Sends a request to one upstream by the name `contentSources` gave it (a member's included). */
+  async request<T>(name: string, run: (client: Client) => Promise<T>): Promise<T> {
+    const upstream = this.upstreams.get(name);
+    if (!upstream) throw new Error(`Unknown upstream: ${name}`);
+    const group = upstream.group ? this.groups.get(upstream.group) : undefined;
+    return this.send(upstream, { run, group, what: "request" });
+  }
+
+  /** Reconnects a down server first, and sends again once when the server provably never got it. */
+  private async send<T>(upstream: UpstreamEntry, { run, group, what }: SendOptions<T>): Promise<T> {
     await this.ensureConnected(upstream, group);
     const client = upstream.client;
+    const invoke = () => withTimeout(run(upstream.client), this.opts.callTimeoutMs ?? CALL_TIMEOUT_MS, `[${upstream.name}] ${what} timed out`);
     try {
-      return await this.invoke(upstream, toolName, args);
+      return await invoke();
     } catch (err) {
       if (!(await isGone(client, err))) throw err;
       if (upstream.client === client && upstream.state === "connected") this.markFailed(upstream, err);
       if (!wasNotDelivered(err)) {
-        this.scheduleReconnect(upstreamName);
+        this.scheduleReconnect(upstream.name);
         throw err;
       }
-      log(`[${upstreamName}] call never reached the server — reconnecting to send it again`);
+      log(`[${upstream.name}] ${what} never reached the server — reconnecting to send it again`);
       await this.ensureConnected(upstream, group);
-      return await this.invoke(upstream, toolName, args);
+      return await invoke();
     }
+  }
+
+  /** Connected upstreams whose resources and skills this client may see, in config order. */
+  contentSources(clientFilter?: ToolFilter): ContentSource[] {
+    const held = this.heldGrants(clientFilter);
+    const locked = lockedPatterns(this.grants, held);
+    return [...this.upstreams.values()]
+      .filter((e) => e.state === "connected" && (!e.group || held.has(e.name.slice(e.group.length + 1))))
+      .map((e) => ({
+        name: e.name,
+        isMember: Boolean(e.group),
+        content: e.content,
+        // Grants name a group's items by the group, as they do its tools.
+        isVisible: (item: string) => matchesFilter(item, serverFilter(e.config))
+          && isVisibleToClient({ tool: { name: `${e.group ?? e.name}${SEP}${item}`, originalName: item }, clientFilter, locked }),
+      }));
   }
 
   /** Reconnects a server that is down before a call goes to it. */
@@ -456,15 +507,6 @@ export class Aggregator {
     return [...this.upstreams.values()].find((e) => e === upstream
       ? e.state === "starting"
       : group && e.group === group.name && "command" in e.config && (e.state === "starting" || this.pendingReconnects.has(e.name)));
-  }
-
-  private invoke(upstream: UpstreamEntry, toolName: string, args: Record<string, unknown>): ReturnType<Client["callTool"]> {
-    return withTimeout(
-      // Pinned last: the client can't override what the config fixes.
-      upstream.client.callTool({ name: toolName, arguments: { ...args, ...upstream.config.pinArgs } }),
-      this.opts.callTimeoutMs ?? CALL_TIMEOUT_MS,
-      `[${upstream.name}] callTool timed out`,
-    );
   }
 
   getStatus(): UpstreamStatus[] {
@@ -577,7 +619,7 @@ export class Aggregator {
     const transport = buildTransport(name, srv);
     try {
       await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] connect timed out`);
-      return { client, tools: await listToolsWithin(client, `[${name}]`) };
+      return { client, catalog: await listWithin(client, `[${name}]`) };
     } catch (err) {
       try { await client.close(); } catch { /* ignore */ }
       if (isHttpServer(srv) && !isAuthError(err)) return this.connectViaSSE(name, srv);
@@ -585,15 +627,15 @@ export class Aggregator {
     }
   }
 
-  private async connectViaSSE(name: string, srv: ServerConfig): Promise<{ client: Client; tools: Tool[] }> {
+  private async connectViaSSE(name: string, srv: ServerConfig): Promise<Connected> {
     log(`[${name}] StreamableHTTP failed, trying SSE fallback…`);
     const client = new Client({ name: CLIENT_NAME, version: VERSION });
     const transport = buildSSETransport(name, srv);
     try {
       await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `[${name}] SSE connect timed out`);
-      const tools = await listToolsWithin(client, `[${name}] SSE`);
+      const catalog = await listWithin(client, `[${name}] SSE`);
       log(`[${name}] connected via SSE fallback`);
-      return { client, tools };
+      return { client, catalog };
     } catch (err) {
       try { await client.close(); } catch { /* ignore */ }
       throw err;
@@ -645,14 +687,13 @@ function isValidName(name: string, profiles: Config["profiles"]): boolean {
 /** An entry with no live client: one that failed to connect, or a profile member not used yet. */
 function blankEntry(name: string, config: ServerConfig, state: "failed" | "idle"): UpstreamEntry {
   return {
-    name, client: new Client({ name: CLIENT_NAME, version: VERSION }), tools: [], config,
+    name, client: new Client({ name: CLIENT_NAME, version: VERSION }), tools: [], content: EMPTY_CONTENT, config,
     state, connectedAt: null, lastError: null, lastErrorAt: null, reconnectAttempts: 0, needsAuth: false, secrets: [],
   };
 }
 
-async function listToolsWithin(client: Client, label: string): Promise<Tool[]> {
-  const { tools } = await withTimeout(client.listTools(), CONNECT_TIMEOUT_MS, `${label} listTools timed out`);
-  return tools;
+function listWithin(client: Client, label: string): Promise<Catalog> {
+  return withTimeout(listCatalog(client, label), CONNECT_TIMEOUT_MS, `${label} listing timed out`);
 }
 
 /** The values `$(command)` and the config filled into a server's credentials. */

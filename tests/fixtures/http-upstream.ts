@@ -2,16 +2,15 @@
 // a network outage, or a server restarted and forgetting its sessions.
 import http from "http";
 import { randomUUID } from "crypto";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { isInitializeRequest, McpServer } from "@modelcontextprotocol/server";
 
 /** `addTool` registers a tool on every open session, which announces it with `tools/list_changed`. */
 export type Upstream = { port: number; calls: number; stop: () => Promise<void>; addTool: (name: string) => void };
 
 /** `slow` holds every `slow` call until the promise settles. */
 export async function startUpstream(opts: { port?: number; slow?: Promise<void> } = {}): Promise<Upstream> {
-  const sessions = new Map<string, StreamableHTTPServerTransport>();
+  const sessions = new Map<string, NodeStreamableHTTPServerTransport>();
   const servers: McpServer[] = [];
   const upstream: Upstream = {
     port: 0, calls: 0, stop: async () => {},
@@ -25,7 +24,7 @@ export async function startUpstream(opts: { port?: number; slow?: Promise<void> 
       res.writeHead(400).end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Bad Request: No valid session ID provided" }, id: null }));
       return;
     }
-    const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
+    const transport: NodeStreamableHTTPServerTransport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: randomUUID,
       onsessioninitialized: (id) => { sessions.set(id, transport); },
     });

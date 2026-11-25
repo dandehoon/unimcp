@@ -1,17 +1,9 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-  ErrorCode,
-  McpError,
-  ToolListChangedNotificationSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { Client, ProtocolError, ProtocolErrorCode, StreamableHTTPClientTransport, type Tool } from "@modelcontextprotocol/client";
+import { Server } from "@modelcontextprotocol/server";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { loadRawConfig, missingEnvVars, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, HEADER_TOOLS_GRANTS } from "./config.js";
 import { SEP } from "./aggregator.js";
+import { CONTENT_CAPABILITIES, forwardContent } from "./content.js";
 import { ensureDaemon } from "./daemon.js";
 import { heldGrants, watchGrantsFiles } from "./grants.js";
 import { REFRESH_TOOL } from "./refresh.js";
@@ -38,14 +30,18 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
 
   const server = new Server(
     MCP_SERVER_IDENTITY,
-    { capabilities: { tools: { listChanged: true } } }
+    { capabilities: { tools: { listChanged: true }, ...CONTENT_CAPABILITIES } }
   );
-  // The daemon says when an upstream's tools appear or change, e.g. a server back after an outage.
+  // The daemon says when an upstream's tools or resources appear or change, e.g. a server back after an outage.
   const onToolsChanged = () => {
     server.sendToolListChanged().catch((err) => log("[bridge] tools/list_changed failed:", String(err)));
   };
+  const onResourcesChanged = () => {
+    server.sendResourceListChanged().catch((err) => log("[bridge] resources/list_changed failed:", String(err)));
+  };
+  const notices = { onToolsChanged, onResourcesChanged };
 
-  let client = await createClient({ url: daemonUrl, headers, onToolsChanged });
+  let client = await createClient({ url: daemonUrl, headers, notices });
   let lastReconnectAt = 0;
 
   const initialTools = await client.listTools();
@@ -69,21 +65,22 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
       log(`[bridge] daemon re-spawned on port ${newPort}`);
       // A fresh daemon connected its upstreams anew: which are up may differ from what the client listed.
       onToolsChanged();
+      onResourcesChanged();
     }
   }
 
   /** Connects with the grants held right now, so no reconnect can resurrect a revoked one. */
   async function switchClient(url: URL): Promise<void> {
     const next = buildFilterHeaders();
-    const fresh = await createClient({ url, headers: next, onToolsChanged });
+    const fresh = await createClient({ url, headers: next, notices });
     const old = client;
     client = fresh;
     daemonUrl = url;
     old.close().catch((err) => log("[bridge] old client close error:", String(err)));
     if (JSON.stringify(next) === JSON.stringify(headers)) return;
     headers = next;
-    await server.sendToolListChanged();
-    log("[bridge] grants changed — tool list refreshed");
+    await Promise.all([server.sendToolListChanged(), server.sendResourceListChanged()]);
+    log("[bridge] grants changed — tool and resource lists refreshed");
   }
 
   // A grant added or revoked mid-session changes which tools this client may see. Every request
@@ -106,30 +103,39 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
       await serialized(syncGrants);
       return await fn();
     } catch (err) {
-      if (err instanceof McpError) throw err;
+      if (err instanceof ProtocolError) throw err;
       if (!isTransportError(err)) throw err;
       await serialized(reconnect);
       return await fn();
     }
   }
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
+  server.setRequestHandler("tools/list", async () => {
     try {
       const result = await withReconnect(() => client.listTools());
       return { tools: result.tools };
     } catch (err) {
-      if (err instanceof McpError) throw err;
-      throw new McpError(ErrorCode.InternalError, `[bridge] listTools failed: ${String(err)}`);
+      if (err instanceof ProtocolError) throw err;
+      throw new ProtocolError(ProtocolErrorCode.InternalError, `[bridge] listTools failed: ${String(err)}`);
     }
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler("tools/call", async (req) => {
     const { name, arguments: args } = req.params;
     try {
       return await withReconnect(() => client.callTool({ name, arguments: args ?? {} }));
     } catch (err) {
-      if (err instanceof McpError) throw err;
-      throw new McpError(ErrorCode.InternalError, `[bridge] callTool failed: ${String(err)}`);
+      if (err instanceof ProtocolError) throw err;
+      throw new ProtocolError(ProtocolErrorCode.InternalError, `[bridge] callTool failed: ${String(err)}`);
+    }
+  });
+
+  forwardContent(server, async (run) => {
+    try {
+      return await withReconnect(() => run(client));
+    } catch (err) {
+      if (err instanceof ProtocolError) throw err;
+      throw new ProtocolError(ProtocolErrorCode.InternalError, `[bridge] request failed: ${String(err)}`);
     }
   });
 
@@ -160,12 +166,13 @@ export async function runBridge(opts: BridgeOptions): Promise<void> {
 type DaemonClientOptions = {
   url: URL;
   headers: Record<string, string> | undefined;
-  onToolsChanged: () => void;
+  notices: { onToolsChanged: () => void; onResourcesChanged: () => void };
 };
 
-async function createClient({ url, headers, onToolsChanged }: DaemonClientOptions): Promise<Client> {
+async function createClient({ url, headers, notices }: DaemonClientOptions): Promise<Client> {
   const client = new Client({ name: "unimcp-bridge", version: MCP_SERVER_IDENTITY.version });
-  client.setNotificationHandler(ToolListChangedNotificationSchema, onToolsChanged);
+  client.setNotificationHandler("notifications/tools/list_changed", notices.onToolsChanged);
+  client.setNotificationHandler("notifications/resources/list_changed", notices.onResourcesChanged);
   const transport = new StreamableHTTPClientTransport(url, {
     requestInit: headers ? { headers } : undefined,
   });

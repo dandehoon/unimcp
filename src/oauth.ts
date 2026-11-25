@@ -2,12 +2,7 @@ import { createHash, randomBytes } from "crypto";
 import { mkdirSync, renameSync } from "fs";
 import path from "path";
 import { watch } from "chokidar";
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import type {
-  OAuthClientInformationMixed,
-  OAuthClientMetadata,
-  OAuthTokens,
-} from "@modelcontextprotocol/sdk/shared/auth.js";
+import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthClientProvider, OAuthDiscoveryState, OAuthTokens } from "@modelcontextprotocol/client";
 import { CONFIG_DIR, type OAuthServer } from "./config.js";
 import { parseJsonSafe, readFileSafe, writeFileSafe, toJson, PERMS_PRIVATE } from "./utils.js";
 
@@ -73,6 +68,8 @@ export function watchTokenStore(onChange: (name: string) => void): () => Promise
 export class FileOAuthProvider implements OAuthClientProvider {
   readonly expectedState = randomBytes(16).toString("hex");
   private verifier = "";
+  // Kept as long as the verifier: it binds the code coming back to the authorization server that issued it.
+  private discovery?: OAuthDiscoveryState;
   private readonly file: string;
   private hasSavedTokens = false;
   /** Access token last handed to the SDK — tells our failed refresh apart from another process's success. */
@@ -152,8 +149,17 @@ export class FileOAuthProvider implements OAuthClientProvider {
     return this.verifier;
   }
 
+  saveDiscoveryState(state: OAuthDiscoveryState): void {
+    this.discovery = state;
+  }
+
+  discoveryState(): OAuthDiscoveryState | undefined {
+    return this.discovery;
+  }
+
   invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery"): void {
     if (scope === "verifier") this.verifier = "";
+    if (scope === "discovery" || scope === "all") this.discovery = undefined;
     if (scope === "verifier" || scope === "discovery") return;
     const { client, tokens } = this.read();
     // Another process (a second daemon, `unimcp auth`) already replaced the tokens that failed here.

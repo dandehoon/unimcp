@@ -1,16 +1,11 @@
 import http from "http";
 import { existsSync } from "fs";
 import { watch } from "chokidar";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-  ErrorCode,
-  McpError,
-} from "@modelcontextprotocol/sdk/types.js";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { ProtocolError, ProtocolErrorCode, Server } from "@modelcontextprotocol/server";
 import { loadConfig, type ToolFilter, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, HEADER_TOOLS_GRANTS, CONFIG_DIR, pidFilePath } from "./config.js";
-import { Aggregator } from "./aggregator.js";
+import { Aggregator, type AggregatorOptions } from "./aggregator.js";
+import { CONTENT_CAPABILITIES, serveContent } from "./content.js";
 import { AuthRequiredError, watchTokenStore } from "./oauth.js";
 import { REFRESH_TOOL, callRefresh } from "./refresh.js";
 import { SignIns } from "./sign-in.js";
@@ -33,28 +28,29 @@ type McpServerDeps = { aggregator: Aggregator; signIns: SignIns; clientFilter?: 
 function buildMcpServer({ aggregator, signIns, clientFilter }: McpServerDeps): Server {
   const server = new Server(
     MCP_SERVER_IDENTITY,
-    { capabilities: { tools: { listChanged: true } } }
+    { capabilities: { tools: { listChanged: true }, ...CONTENT_CAPABILITIES } }
   );
+  serveContent(server, { aggregator, clientFilter });
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler("tools/list", async () => ({
     tools: [...aggregator.listTools(clientFilter).map(({ upstreamName: _u, originalName: _o, ...tool }) => tool), REFRESH_TOOL],
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler("tools/call", async (req) => {
     const { name, arguments: args } = req.params;
     // Outside filters and grants: it is how a client recovers the tools those leave it.
     if (name === REFRESH_TOOL.name) return callRefresh({ aggregator, args: args ?? {}, clientFilter, signIns });
     // A filtered-out or grant-locked tool is absent, not merely unlisted: knowing its name isn't enough.
     if (!aggregator.isCallable(name, clientFilter)) {
-      throw new McpError(ErrorCode.InvalidParams, `Tool not available to this client: ${name}`);
+      throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Tool not available to this client: ${name}`);
     }
     const grant = aggregator.lockingGrant({ name, args: args ?? {}, clientFilter });
-    if (grant) throw new McpError(ErrorCode.InvalidParams, `${name} with these arguments needs the '${grant}' grant`);
+    if (grant) throw new ProtocolError(ProtocolErrorCode.InvalidParams, `${name} with these arguments needs the '${grant}' grant`);
     try {
       return await aggregator.callTool(name, args ?? {});
     } catch (err) {
       if (err instanceof AuthRequiredError) throw await signInError({ aggregator, signIns, server: err.server });
-      throw new McpError(ErrorCode.InternalError, String(err));
+      throw new ProtocolError(ProtocolErrorCode.InternalError, String(err));
     }
   });
 
@@ -62,13 +58,13 @@ function buildMcpServer({ aggregator, signIns, clientFilter }: McpServerDeps): S
 }
 
 /** Tells the agent how the user signs in: the link this daemon is waiting on, or why there is none. */
-async function signInError({ aggregator, signIns, server }: Omit<McpServerDeps, "clientFilter"> & { server: string }): Promise<McpError> {
+async function signInError({ aggregator, signIns, server }: Omit<McpServerDeps, "clientFilter"> & { server: string }): Promise<ProtocolError> {
   const link = await signIns.link(aggregator, server);
-  if (!link) return new McpError(ErrorCode.InternalError, `${server} has its OAuth tokens now — call again`);
+  if (!link) return new ProtocolError(ProtocolErrorCode.InternalError, `${server} has its OAuth tokens now — call again`);
   const how = "url" in link
     ? `give the user this sign-in link as a clickable markdown link, then call again once they have approved: ${link.url}`
     : `sign-in could not start (${link.error}); or run in a terminal: unimcp auth ${server}`;
-  return new McpError(ErrorCode.InternalError, `${server} needs OAuth sign-in — ${how}`);
+  return new ProtocolError(ProtocolErrorCode.InternalError, `${server} needs OAuth sign-in — ${how}`);
 }
 
 export async function startManagedServer(opts: ManagedServerOptions): Promise<void> {
@@ -92,6 +88,10 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   const notifyToolsChanged = () => {
     for (const s of sessionServers) s.sendToolListChanged().catch((err) => log("[server] tools/list_changed failed:", String(err)));
   };
+  const notifyResourcesChanged = () => {
+    for (const s of sessionServers) s.sendResourceListChanged().catch((err) => log("[server] resources/list_changed failed:", String(err)));
+  };
+  const notices = { onToolsChanged: notifyToolsChanged, onResourcesChanged: notifyResourcesChanged };
 
   function scheduleShutdown() {
     if (idleTimer) return;
@@ -168,7 +168,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       cancelShutdown();
     }
 
-    let transport: StreamableHTTPServerTransport | null = null;
+    let transport: NodeStreamableHTTPServerTransport | null = null;
     let mcpServer: Server | null = null;
     let isClosed = false;
     // Use req.on("close") instead of res.on("close") — Bun does not fire res close events.
@@ -200,7 +200,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
 
     const clientFilter = parseToolFilterHeaders(req);
     mcpServer = buildMcpServer({ aggregator, signIns, clientFilter });
-    transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
     await mcpServer.connect(transport);
     if (isSession && !isClosed) sessionServers.add(mcpServer);
@@ -225,7 +225,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   const closeTokenWatcher = watchTokenStore((name) => { tokenEvents.add(name); flushTokenEvents(); });
 
   try {
-    const initial = await buildAggregator(opts.configPath, notifyToolsChanged);
+    const initial = await buildAggregator(opts.configPath, notices);
     aggregator = initial.aggregator;
   } catch (err) {
     log("[server] initial aggregator build failed:", String(err));
@@ -246,13 +246,14 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       // The new aggregator would start a second copy of a still-starting server into the same
       // install dir. The wait is bounded by the give-up; the build then reads the latest file.
       await aggregator?.whenStarted();
-      const next = await buildAggregator(opts.configPath, notifyToolsChanged);
+      const next = await buildAggregator(opts.configPath, notices);
       // Swap reference first so new requests hit the fresh aggregator immediately,
       // then tear down the old one (eliminates race window and simultaneous live connections).
       const old = aggregator;
       aggregator = next.aggregator;
       log(`[server] reloaded — ${next.toolCount} tools`);
       notifyToolsChanged();
+      notifyResourcesChanged();
       await old?.disconnect();
     } catch (err) {
       log("[server] reload failed:", String(err));
@@ -281,9 +282,11 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
 
 // --- helpers ---
 
-async function buildAggregator(configPath: string, onToolsChanged: () => void): Promise<{ aggregator: Aggregator; toolCount: number }> {
+type ListNotices = Pick<AggregatorOptions, "onToolsChanged" | "onResourcesChanged">;
+
+async function buildAggregator(configPath: string, notices: ListNotices): Promise<{ aggregator: Aggregator; toolCount: number }> {
   const config = loadConfig(configPath);
-  const aggregator = new Aggregator({ onToolsChanged });
+  const aggregator = new Aggregator(notices);
   await aggregator.connect(config);
   const toolCount = aggregator.listTools().length;
   log(`[server] ${toolCount} tools ready`);

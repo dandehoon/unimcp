@@ -11,6 +11,9 @@ src/
   index.ts        # Commander CLI entry — routes to bridge, daemon, server, setup, collect, auth, grant, completion, mcp/status/stop; a terminal on stdin means `status`
   config.ts       # Config types, JSONC loader, grants/profiles parsing, ${VAR} expansion (skips servers and profiles with unset vars), env-hash, pidFilePath, CONFIG_DIR, header constants
   aggregator.ts   # Upstream client manager — connect, merge tools, route calls, in-flight reconnect
+  catalog.ts      # What an upstream lists: tools, resources, resource templates, skills
+  resources.ts    # Resource/skill URI routing — `skill://<server>/…` rewrite, first-owner URIs, visibility by item name
+  content.ts      # resources/* and skills/* handlers: served by the daemon, forwarded by the bridge
   transport.ts    # Upstream transports (stdio / StreamableHTTP / SSE), transport and auth error checks, withTimeout
   client-grants.ts # `grants/<pid>` per client process: `unimcp grant` edits, stale and exited-client files ignored or pruned
   stdio.ts        # Starting a stdio upstream — no kill deadline (StillStarting), stderr kept and masked for the error
@@ -131,10 +134,10 @@ Tests are unit-level; `stdio-start.test.ts` spawns `tests/fixtures/stdio-server.
   import { loadConfig } from './config.ts'; // ❌
   import { loadConfig } from './config'; // ❌
   ```
-- SDK imports use deep paths with `.js`:
+- The SDK is v2, split by role: `@modelcontextprotocol/client` (`/stdio`, `/ext/skills`), `@modelcontextprotocol/server` (`/stdio`), `@modelcontextprotocol/node` (Node HTTP transport), `@modelcontextprotocol/core/ext/skills` (skills schemas):
   ```ts
-  import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-  import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+  import { Client, type Tool } from '@modelcontextprotocol/client';
+  import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
   ```
 
 ### Import ordering
@@ -208,7 +211,7 @@ Use `import type` for type-only imports.
 
 - On error: **either return it or log it — never both, never omit**. Breaks the flow → throw; flow continues → log and continue
 - Upstream connection failures are non-fatal: logged, server skipped
-- MCP protocol errors are wrapped in `McpError(ErrorCode.InternalError, String(err))`
+- MCP protocol errors are wrapped in `ProtocolError(ProtocolErrorCode.InternalError, String(err))`; an upstream's own `ProtocolError` passes through
 
 ---
 
@@ -224,11 +227,12 @@ Use `import type` for type-only imports.
 ### Server (per-request, stateless HTTP mode)
 
 ```ts
-const server = new Server({ name, version }, { capabilities: { tools: {} } });
-// capabilities: { tools: {} } MUST be set at construction for tools to work
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...] }));
-server.setRequestHandler(CallToolRequestSchema, async (req) => { ... });
-const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+const server = new Server({ name, version }, { capabilities: { tools: {}, ...CONTENT_CAPABILITIES } });
+// capabilities MUST be set at construction for their handlers to work
+server.setRequestHandler("tools/list", async () => ({ tools: [...] }));
+server.setRequestHandler("tools/call", async (req) => { ... });
+// A method outside the core spec takes its schemas: server.setRequestHandler(SKILLS_LIST_METHOD, { params, result }, handler)
+const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 await server.connect(transport);
 await transport.handleRequest(req, res);
 ```
@@ -269,7 +273,7 @@ PROFILE_ARG      = "profile"                            (profiles.ts)
 
 - The daemon is a **shared background process** — `pnpm dev` bridges to it rather than spawning upstreams per client
 - **Auto port fallback**: server tries `preferredPort` (default 4848); if `EADDRINUSE`, falls back to port 0 (OS-assigned); actual port written to pid file so bridge always discovers the right port
-- `StreamableHTTPServerTransport` must be created **per request** (stateless: `sessionIdGenerator: undefined`)
+- `NodeStreamableHTTPServerTransport` must be created **per request** (stateless: `sessionIdGenerator: undefined`). This serves the 2025 protocol era, as the bridge, the stdio side and upstream clients (`versionNegotiation` left at `legacy`) all speak; skills work in it
 - Upstream stdio servers inherit `{ ...process.env, ...srv.env }` — merge, not replace
 - Reconnect on hot-reload: disconnect old aggregator before replacing with new one
 
@@ -289,6 +293,10 @@ PROFILE_ARG      = "profile"                            (profiles.ts)
 - `unimcp__refresh({ servers? })` (`refresh.ts`, always listed, outside filters and grants): reconnects the named servers that are down — all when omitted or empty, a group covering the members whose profile the client holds — skipping the backoff, and re-lists connected ones; it never restarts a healthy one (the daemon is shared). After at most 45 s, plus up to 10 s to start a sign-in (under the bridge's 60 s request timeout), it returns each server's state, `lastError` when down, `needsSignIn` for one needing OAuth sign-in — with a `signIn` link (or its error) only when `servers` names it — and the client's tools; slower connects carry on. `unimcp` is a reserved server name (`unimcp add` refuses it, the daemon skips it)
 - An upstream's `tools/list_changed` re-lists it with one re-read in flight per client, plus one more if another arrives meanwhile
 - `lastError` is masked in `markFailed`, whatever the transport, against `Config.expandedValues` and the `env`/`headers`/`oauth.clientSecret` values its last connect resolved (`$(command)` output included), so a failed `$(command)` keeps its name
+- Resources and skills (`catalog.ts`, `resources.ts`, `content.ts`): each connected upstream's resources, templates and skills (SEP-2640, via `SkillsClient`) are listed with its tools and re-listed on its `tools/list_changed` or `resources/list_changed`; a change sends `resources/list_changed` down each bridge. A listing failure leaves the server its tools and no content
+  - A `skill://<path>` URI is served as `skill://<server>/<path>` (a profile member's as `skill://<server>.<profile>/…`), so servers' skills never collide; bytes, digests, frontmatter and the last path segment stay as served. Other URIs pass unchanged, and the first server in config order listing one owns it; a profile member serves only its `skill://` URIs
+  - An item is filtered like a tool of its name (a skill's `name`, a resource's or template's `name`): server `include`/`exclude` and client include/exclude on the bare name, grant globs on `<server>__<name>` (a group's members by the group). A read is routed only to a URI an upstream listed — a listed resource, a file under a listed skill, a template match — else `-32602`
+  - No `directoryRead`: a skill's `resources` lists its files. `skills/list` answers `ttlMs: 0`, `cacheScope: "private"`
 - `pinArgs` (any server): removed from the listed schemas and spread over the call's arguments last, so the client can't override them
 - `$(command)` (`substitute.ts`) runs in `connectClient`, on every connect and reconnect, and in `auth`; only in `env`, `headers` and `oauth.clientSecret` (never `command`/`args`: argv is visible in `ps`). Errors name the command and exit code, never its output
 - Grants are a guardrail, not a security boundary: the daemon trusts the claimed `X-Tools-Grants`. Grant globs are literal (`nonegate`, `nocomment`); empty lists/patterns are rejected at load

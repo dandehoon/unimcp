@@ -1,4 +1,4 @@
-import { ErrorCode, McpError, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
+import { ProtocolErrorCode, ProtocolError, type CallToolResult, type Tool } from "@modelcontextprotocol/server";
 import { type Aggregator, REFRESH_WAIT_MS, SEP } from "./aggregator.js";
 import type { ToolFilter } from "./config.js";
 import type { SignIns } from "./sign-in.js";
@@ -50,11 +50,11 @@ export async function callRefresh({ aggregator, args, clientFilter, signIns }: R
 function parseServers(value: unknown, known: string[]): string[] | undefined {
   if (value === undefined || value === null || (Array.isArray(value) && value.length === 0)) return undefined;
   if (!Array.isArray(value) || !value.every((v) => typeof v === "string")) {
-    throw new McpError(ErrorCode.InvalidParams, "'servers' must be a list of server names");
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, "'servers' must be a list of server names");
   }
   const unknown = value.filter((v) => !known.includes(v));
   if (unknown.length) {
-    throw new McpError(ErrorCode.InvalidParams, `Unknown server(s): ${unknown.join(", ")}. Known: ${known.join(", ")}`);
+    throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown server(s): ${unknown.join(", ")}. Known: ${known.join(", ")}`);
   }
   return value;
 }
