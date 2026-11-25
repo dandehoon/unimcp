@@ -115,7 +115,7 @@ async function listen(server: http.Server, port: number): Promise<void> {
 /** The `/start` link and the cookie it sets; named per port, since localhost cookies ignore the port. */
 function browserBinding(opts: CallbackOptions) {
   const key = randomBytes(16).toString("hex");
-  const secret = randomBytes(16).toString("hex");
+  const nonce = randomBytes(16).toString("hex");
   const cookie = `unimcp_sign_in_${opts.callbackPort}`;
   let consent: URL | undefined;
   return {
@@ -128,12 +128,12 @@ function browserBinding(opts: CallbackOptions) {
       // Lax: still sent on the authorization server's top-level redirect back here.
       res.writeHead(302, {
         Location: consent.href,
-        "Set-Cookie": `${cookie}=${secret}; HttpOnly; SameSite=Lax; Path=/callback`,
+        "Set-Cookie": `${cookie}=${nonce}; HttpOnly; SameSite=Lax; Path=/callback`,
         Connection: "close",
       }).end();
     },
     isBound(req: http.IncomingMessage): boolean {
-      return (req.headers.cookie ?? "").split(/;\s*/).includes(`${cookie}=${secret}`);
+      return (req.headers.cookie ?? "").split(/;\s*/).includes(`${cookie}=${nonce}`);
     },
   };
 }

@@ -15,8 +15,11 @@ const START_TIMEOUT_MS = 10_000;
 
 type SignInLink = { url: string } | { error: string };
 
-/** `dir`: token store directory, OAUTH_DIR by default. `startTimeoutMs`: see START_TIMEOUT_MS. */
-export type SignInsOptions = { dir?: string; startTimeoutMs?: number };
+/**
+ * `dir`: token store directory, OAUTH_DIR by default. `startTimeoutMs`: see START_TIMEOUT_MS.
+ * `hasBrowser`: whether a browser can reach this machine's localhost, `hasLocalBrowser` by default.
+ */
+export type SignInsOptions = { dir?: string; startTimeoutMs?: number; hasBrowser?: boolean };
 
 type Pending = { serverUrl: string; port: number; link: Promise<URL | null>; abort: AbortController; done: Promise<void> };
 type Run = { name: string; target: SignInTarget; signal: AbortSignal; previous?: Promise<void> };
@@ -44,7 +47,7 @@ export class SignIns {
     const config = target?.config;
     if (!target || !config || !isOAuthServer(config)) return undefined;
     // The browser's redirect goes to its own machine's localhost, never reaching a daemon over SSH.
-    if (!hasLocalBrowser(process.env)) return { error: `the daemon runs over SSH, out of the browser's reach — run there: unimcp auth ${name}` };
+    if (!(this.opts.hasBrowser ?? hasLocalBrowser(process.env))) return { error: `the daemon runs over SSH, out of the browser's reach — run there: unimcp auth ${name}` };
     try {
       const url = await this.pendingFor(name, { ...target, config }).link;
       return url ? { url: url.href } : undefined;

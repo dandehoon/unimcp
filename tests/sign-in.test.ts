@@ -55,11 +55,11 @@ function needingSignIn(srvs: Record<string, HttpServer>): Aggregator {
   } as unknown as Aggregator;
 }
 
-async function setup(opts: { hang?: boolean; startTimeoutMs?: number } = {}) {
+async function setup(opts: { hang?: boolean; startTimeoutMs?: number; hasBrowser?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "unimcp-signin-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const srv: HttpServer = { url: await startAuthServer(opts), auth: "oauth", oauth: { callbackPort: await freePort() } };
-  const signIns = new SignIns({ dir, startTimeoutMs: opts.startTimeoutMs });
+  const signIns = new SignIns({ dir, startTimeoutMs: opts.startTimeoutMs, hasBrowser: opts.hasBrowser ?? true });
   return { dir, srv, signIns, aggregator: needingSignIn({ test: srv }) };
 }
 
@@ -132,6 +132,12 @@ describe("SignIns", () => {
   test("a server that needs no sign-in gets no link", async () => {
     const { signIns } = await setup();
     expect(await signIns.link(needingSignIn({}), "test")).toBeUndefined();
+  });
+
+  test("starts none where no browser can reach the callback, pointing to unimcp auth", async () => {
+    const { signIns, aggregator } = await setup({ hasBrowser: false });
+    expect(await signIns.link(aggregator, "test")).toEqual({ error: expect.stringContaining("unimcp auth test") });
+    expect(signIns.isPending()).toBe(false);
   });
 });
 
