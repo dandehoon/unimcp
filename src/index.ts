@@ -132,8 +132,10 @@ program
   .description("Authorize an OAuth server in the browser and store its tokens")
   .option("--browser", "open a browser even when this looks like a remote shell")
   .option("--no-browser", "print the URL and accept the pasted redirect instead of opening a browser (default over SSH)")
-  .action(async (name: string, opts: { browser?: boolean }, cmd) => {
-    await runAuth({ name, configPath: resolveConfigPath(globalOpts(cmd).mcpFile), useBrowser: opts.browser });
+  .option("--allow-http", "accept a plain http authorization URL even for an https server (testing)")
+  .action(async (name: string, opts: { browser?: boolean; allowHttp?: boolean }, cmd) => {
+    const configPath = resolveConfigPath(globalOpts(cmd).mcpFile);
+    await runAuth({ name, configPath, useBrowser: opts.browser, allowHttp: opts.allowHttp });
   });
 
 // --- helpers ---

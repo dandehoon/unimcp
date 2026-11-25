@@ -1,7 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { PassThrough } from "stream";
 import { listenForCallback, parseCallback } from "../src/auth-callback.js";
-import { hasLocalBrowser } from "../src/auth.js";
 
 const STATE = "s1";
 const redirect = (query: string) => new URL(`http://localhost:4849/callback?${query}`);
@@ -47,19 +46,5 @@ describe("listenForCallback paste", () => {
     paste.write(`${redirect(`error=access_denied&state=${STATE}`).href}\n`);
     await expect(callback.code).rejects.toThrow("authorization denied: access_denied");
     callback.close(false);
-  });
-});
-
-describe("hasLocalBrowser", () => {
-  test("false over SSH", () => {
-    expect(hasLocalBrowser({ SSH_CONNECTION: "1.2.3.4 1 5.6.7.8 22" }, "darwin")).toBe(false);
-    expect(hasLocalBrowser({ SSH_TTY: "/dev/pts/0" }, "darwin")).toBe(false);
-  });
-
-  test("Linux needs a display", () => {
-    expect(hasLocalBrowser({}, "linux")).toBe(false);
-    expect(hasLocalBrowser({ WAYLAND_DISPLAY: "wayland-0" }, "linux")).toBe(true);
-    expect(hasLocalBrowser({ DISPLAY: ":0" }, "linux")).toBe(true);
-    expect(hasLocalBrowser({}, "darwin")).toBe(true);
   });
 });

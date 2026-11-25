@@ -8,20 +8,18 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { CONFIG_DIR, type HttpServer, type SseServer } from "./config.js";
+import { CONFIG_DIR, type OAuthServer } from "./config.js";
 import { parseJsonSafe, readFileSafe, writeFileSafe, toJson, PERMS_PRIVATE } from "./utils.js";
 
 export const OAUTH_DIR = path.join(CONFIG_DIR, "oauth");
 const DEFAULT_CALLBACK_PORT = 4_849;
-
-type OAuthServer = HttpServer | SseServer;
 
 type Store = { client?: OAuthClientInformationMixed; tokens?: OAuthTokens };
 
 export type OAuthProviderOptions = {
   name: string;
   srv: OAuthServer;
-  /** Opens the consent page; without it the provider is headless and fails with AuthRequiredError. */
+  /** Takes the consent page URL; without it the provider is headless and fails with AuthRequiredError. */
   onRedirect?: (url: URL) => void;
   /** Store directory; defaults to OAUTH_DIR. */
   dir?: string;
@@ -29,11 +27,28 @@ export type OAuthProviderOptions = {
   isReauth?: boolean;
 };
 
-/** The server has no usable tokens and needs `unimcp auth <name>`. */
+/** The server has no usable tokens: someone has to sign in. */
 export class AuthRequiredError extends Error {
-  constructor(name: string) {
-    super(`[${name}] OAuth authorization required — run: unimcp auth ${name}`);
+  constructor(readonly server: string) {
+    super(`[${server}] OAuth sign-in required — get a link from unimcp__refresh with servers: ["${server}"], or run: unimcp auth ${server}`);
   }
+}
+
+/** The port the browser's redirect comes back to. */
+export function callbackPortOf(srv: OAuthServer): number {
+  const port = srv.oauth?.callbackPort;
+  return Number.isInteger(port) ? (port as number) : DEFAULT_CALLBACK_PORT;
+}
+
+/**
+ * An authorization URL comes from the server's metadata — untrusted: https only, never a file or app
+ * scheme; http too for a server the config itself reaches over http, or with `allowHttp`.
+ */
+export function assertAuthorizationUrl(url: URL, opts: { srv: OAuthServer; allowHttp?: boolean }): URL {
+  const isHttpOk = opts.allowHttp === true || new URL(opts.srv.url).protocol === "http:";
+  if (url.protocol === "https:" || (isHttpOk && url.protocol === "http:")) return url;
+  const hint = url.protocol === "http:" ? " (accepted for a server whose url is http, or with `unimcp auth --allow-http`)" : "";
+  throw new Error(`refusing non-https authorization URL: ${url.href}${hint}`);
 }
 
 /** Server name a token file belongs to, or null for any other file. */
@@ -70,8 +85,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   get callbackPort(): number {
-    const port = this.opts.srv.oauth?.callbackPort;
-    return Number.isInteger(port) ? (port as number) : DEFAULT_CALLBACK_PORT;
+    return callbackPortOf(this.opts.srv);
   }
 
   get scope(): string | undefined {

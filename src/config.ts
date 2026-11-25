@@ -62,6 +62,8 @@ export type OAuthConfig = {
   clientSecret?: string;
   scopes?: string[];
   callbackPort?: number;
+  /** The daemon opens the consent page itself when an agent's refresh or call starts a sign-in (not over SSH). */
+  openBrowser?: boolean;
 };
 
 type RemoteServerFields = CommonFields & {
@@ -78,6 +80,7 @@ export type HttpServer = RemoteServerFields & { type?: "http" };
 export type SseServer = RemoteServerFields & { type: "sse" };
 
 export type ServerConfig = StdioServer | HttpServer | SseServer;
+export type OAuthServer = HttpServer | SseServer;
 
 /**
  * A glob hides matching tools from a client without the grant; `{ tool, args }` leaves them
@@ -119,7 +122,7 @@ export function isSseServer(s: ServerConfig): s is SseServer {
   return "type" in s && s.type === "sse";
 }
 
-export function isOAuthServer(s: ServerConfig): s is HttpServer | SseServer {
+export function isOAuthServer(s: ServerConfig): s is OAuthServer {
   return "url" in s && (s.auth === "oauth" || s.oauth !== undefined);
 }
 

@@ -39,6 +39,9 @@ export type AggregatorOptions = {
   onToolsChanged?: () => void;
 };
 
+/** `resolve`: the config with its `$(command)`s run, and the masking its errors need; it throws masked too. */
+export type SignInTarget = { config: ServerConfig; resolve: () => Promise<{ srv: ServerConfig; mask: (text: string) => string }> };
+
 /** `servers`: listed names to refresh, all when omitted. `clientFilter`: whose profiles count. */
 export type RefreshOptions = { servers?: string[]; clientFilter?: ToolFilter };
 
@@ -56,6 +59,8 @@ export type UpstreamStatus = {
   lastError: string | null;
   lastErrorAt: number | null;
   reconnectAttempts: number;
+  /** Down for want of OAuth tokens: retrying can't help until someone signs in. */
+  needsAuth: boolean;
 };
 
 type UpstreamEntry = {
@@ -68,6 +73,7 @@ type UpstreamEntry = {
   lastError: string | null;
   lastErrorAt: number | null;
   reconnectAttempts: number;
+  needsAuth: boolean;
   /** Values its last connect resolved (env, headers, OAuth secret), masked in its errors. */
   secrets: string[];
   /** Set on a profile member: reached only through its server's `profile` argument, never by its own name. */
@@ -172,6 +178,7 @@ export class Aggregator {
     const previous = entry.client;
     entry.client = result.client;
     entry.state = "connected";
+    entry.needsAuth = false;
     entry.connectedAt = Date.now();
     entry.reconnectAttempts = 0;
     if (previous !== result.client) void previous.close().catch(() => {});
@@ -235,6 +242,7 @@ export class Aggregator {
     const reason = this.masked(entry, err);
     if (reason !== entry.lastError) log(`[${entry.name}] unavailable:`, reason);
     entry.state = "failed";
+    entry.needsAuth = err instanceof AuthRequiredError;
     entry.lastError = reason;
     entry.lastErrorAt = Date.now();
   }
@@ -438,7 +446,9 @@ export class Aggregator {
     const busy = this.startingConflict(upstream, group);
     if (busy) throw new Error(`Upstream ${busy.name} is still starting (first install?) — retry shortly`);
     await this.onDemandReconnect(upstream);
-    if ((upstream as UpstreamEntry).state !== "connected") throw new Error(`Upstream ${upstream.name} is unavailable (reconnect failed)`);
+    if ((upstream as UpstreamEntry).state === "connected") return;
+    if (upstream.needsAuth) throw new AuthRequiredError(upstream.name);
+    throw new Error(`Upstream ${upstream.name} is unavailable (reconnect failed)`);
   }
 
   /** The server itself still starting, or a local profile sibling starting or connecting: both run the same install. */
@@ -458,9 +468,26 @@ export class Aggregator {
   }
 
   getStatus(): UpstreamStatus[] {
-    return [...this.upstreams.values()].map(({ name, state, tools, connectedAt, lastError, lastErrorAt, reconnectAttempts }) => ({
-      name, state, toolCount: tools.length, connectedAt, lastError, lastErrorAt, reconnectAttempts,
+    return [...this.upstreams.values()].map(({ name, state, tools, connectedAt, lastError, lastErrorAt, reconnectAttempts, needsAuth }) => ({
+      name, state, toolCount: tools.length, connectedAt, lastError, lastErrorAt, reconnectAttempts, needsAuth,
     }));
+  }
+
+  /** A server down for want of OAuth tokens; undefined for any other. Its credentials resolve only on demand. */
+  signInTarget(name: string): SignInTarget | undefined {
+    const entry = this.upstreams.get(name);
+    if (!entry?.needsAuth) return undefined;
+    const resolve = async () => {
+      let srv: ServerConfig;
+      try {
+        srv = await substituteCommands(entry.config);
+      } catch (err) {
+        throw new Error(this.masked(entry, err));
+      }
+      const secrets = [...resolvedSecrets(srv), ...entry.secrets, ...this.expandedValues];
+      return { srv, mask: (text: string) => maskSecrets(text, secrets) };
+    };
+    return { config: entry.config, resolve };
   }
 
   /** Names clients know servers by: plain servers and profile groups, never a group's member. */
@@ -592,6 +619,8 @@ export class Aggregator {
 
 /** Whether a failed call means the server is gone. A slow tool times out on a healthy server too, so a timeout pings it first. */
 async function isGone(client: Client, err: unknown): Promise<boolean> {
+  // Tokens expired with no refresh token: down until someone signs in, though the connection is up.
+  if (err instanceof AuthRequiredError) return true;
   if (!isTimeout(err)) return isTransportError(err) || wasNotDelivered(err);
   try {
     await withTimeout(client.ping(), PING_TIMEOUT_MS, "ping timed out");
@@ -617,7 +646,7 @@ function isValidName(name: string, profiles: Config["profiles"]): boolean {
 function blankEntry(name: string, config: ServerConfig, state: "failed" | "idle"): UpstreamEntry {
   return {
     name, client: new Client({ name: CLIENT_NAME, version: VERSION }), tools: [], config,
-    state, connectedAt: null, lastError: null, lastErrorAt: null, reconnectAttempts: 0, secrets: [],
+    state, connectedAt: null, lastError: null, lastErrorAt: null, reconnectAttempts: 0, needsAuth: false, secrets: [],
   };
 }
 
