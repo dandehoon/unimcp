@@ -23,6 +23,8 @@ unimcp                   # in a terminal: daemon status and tools
 
 Each client spawns a thin stdio bridge; the bridges share one HTTP daemon (port 4848, or a free one) that serves upstream tools as `serverName__toolName`. A daemon serves one context — the config file, the unimcp version and the values of the `${VAR}`s it references — so different secrets get separate daemons.
 
+Agents also get `unimcp__refresh`: it reconnects servers that are down and re-reads the tools of connected ones, optionally limited to `servers`. A server can't be named `unimcp`.
+
 ## Configuration
 
 `~/.config/unimcp/unimcp.json`, unless `--mcp-file`, `UNIMCP_CONFIG` or a `./unimcp.json` says otherwise. Comments are allowed.
@@ -92,7 +94,7 @@ Grants are a guardrail, not a security boundary: any local process can claim any
 
 ### OAuth
 
-Mark a remote server `"auth": "oauth"`, then sign in once with `unimcp auth <name>`. Tokens live owner-only under `~/.config/unimcp/oauth/` and refresh automatically. A server without dynamic client registration needs `"oauth": { "clientId", "clientSecret", "scopes", "callbackPort" }`, with `http://localhost:<callbackPort>/callback` (default 4849) allowed as its redirect URL. Over SSH, on Linux with no display, or with `--no-browser`, it prints the URL instead of opening a browser (`--browser` forces it open): approve anywhere, then paste into the terminal the address the browser was redirected to — the page itself won't load.
+Mark a remote server `"auth": "oauth"`, then sign in once with `unimcp auth <name>`, or from the agent: `unimcp__refresh` naming the server, or a call to it, returns a sign-in link to open in a browser on the daemon's machine; the daemon takes the redirect and connects the server. With `"oauth": { "openBrowser": true }` it opens the link itself. Over SSH, use `unimcp auth`. Tokens live owner-only under `~/.config/unimcp/oauth/` and refresh automatically. A server without dynamic client registration needs `"oauth": { "clientId", "clientSecret", "scopes", "callbackPort" }`, with `http://localhost:<callbackPort>/callback` (default 4849) allowed as its redirect URL. Over SSH, on Linux with no display, or with `--no-browser`, it prints the URL instead of opening a browser (`--browser` forces it open; `--allow-http` accepts a plain-http authorization URL even for an https server; one whose own url is http is accepted anyway): approve anywhere, then paste into the terminal the address the browser was redirected to — the page itself won't load.
 
 ## Commands
 

@@ -14,6 +14,7 @@ import { loadRawConfig, missingEnvVars, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLU
 import { SEP } from "./aggregator.js";
 import { ensureDaemon } from "./daemon.js";
 import { heldGrants, watchGrantsFiles } from "./grants.js";
+import { REFRESH_TOOL } from "./refresh.js";
 import { clientGrantsPath, isOwnGrantsFile, processStartMs } from "./client-grants.js";
 import { log, MCP_SERVER_IDENTITY } from "./utils.js";
 
@@ -224,7 +225,8 @@ function logConnectionStatus(tools: Tool[], configPath: string): void {
   }
 
   const connectedNames = new Set<string>();
-  for (const t of tools) {
+  const upstreamTools = tools.filter((t) => t.name !== REFRESH_TOOL.name);
+  for (const t of upstreamTools) {
     const idx = t.name.indexOf(SEP);
     if (idx > 0) connectedNames.add(t.name.slice(0, idx));
   }
@@ -240,5 +242,5 @@ function logConnectionStatus(tools: Tool[], configPath: string): void {
     return `${name}: no tools`;
   });
   const suffix = failedCount > 0 ? ` ⚠ ${failedCount} upstream(s) unavailable` : "";
-  log(`[bridge] connected to daemon — ${tools.length} tools (${parts.join(", ")})${suffix}`);
+  log(`[bridge] connected to daemon — ${upstreamTools.length} tools (${parts.join(", ")})${suffix}`);
 }

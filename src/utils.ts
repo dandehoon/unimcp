@@ -9,6 +9,8 @@ export function log(...args: unknown[]): void {
 
 export const VERSION: string = pkg.version;
 export const MCP_SERVER_IDENTITY = { name: "unimcp", version: VERSION } as const;
+/** Prefix of unimcp's own tools; no server may take it. */
+export const RESERVED_SERVER_NAME = "unimcp";
 
 export function splitCommaSeparated(value: string): string[] {
   return value.split(",").map((s) => s.trim()).filter(Boolean);
@@ -63,6 +65,16 @@ export function parseJsonSafe<T>(raw: string, context: string): T | null {
 
 export function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// Short values are flags (`1`, `true`), not secrets; masking them would garble every line.
+const MIN_SECRET_LENGTH = 8;
+
+/** `text` with every secret long enough to be one replaced by `***`. */
+export function maskSecrets(text: string, secrets: string[]): string {
+  // Longest first: a shorter secret inside a longer one must not leave the longer one's remainder.
+  return secrets.filter((s) => s.length >= MIN_SECRET_LENGTH).sort((a, b) => b.length - a.length)
+    .reduce((t, s) => t.replaceAll(s, "***"), text);
 }
 
 export function toJson(value: unknown): string {

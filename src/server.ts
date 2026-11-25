@@ -11,7 +11,9 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, type ToolFilter, HEADER_TOOLS_INCLUDE, HEADER_TOOLS_EXCLUDE, HEADER_TOOLS_GRANTS, CONFIG_DIR, pidFilePath } from "./config.js";
 import { Aggregator } from "./aggregator.js";
-import { watchTokenStore } from "./oauth.js";
+import { AuthRequiredError, watchTokenStore } from "./oauth.js";
+import { REFRESH_TOOL, callRefresh } from "./refresh.js";
+import { SignIns } from "./sign-in.js";
 import { log, tryUnlink, splitCommaSeparated, writeFileSafe, PERMS_PRIVATE, MCP_SERVER_IDENTITY } from "./utils.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
@@ -26,18 +28,22 @@ export type ManagedServerOptions = {
   envHash: string;
 };
 
-function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Server {
+type McpServerDeps = { aggregator: Aggregator; signIns: SignIns; clientFilter?: ToolFilter };
+
+function buildMcpServer({ aggregator, signIns, clientFilter }: McpServerDeps): Server {
   const server = new Server(
     MCP_SERVER_IDENTITY,
     { capabilities: { tools: { listChanged: true } } }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: aggregator.listTools(clientFilter).map(({ upstreamName: _u, originalName: _o, ...tool }) => tool),
+    tools: [...aggregator.listTools(clientFilter).map(({ upstreamName: _u, originalName: _o, ...tool }) => tool), REFRESH_TOOL],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
+    // Outside filters and grants: it is how a client recovers the tools those leave it.
+    if (name === REFRESH_TOOL.name) return callRefresh({ aggregator, args: args ?? {}, clientFilter, signIns });
     // A filtered-out or grant-locked tool is absent, not merely unlisted: knowing its name isn't enough.
     if (!aggregator.isCallable(name, clientFilter)) {
       throw new McpError(ErrorCode.InvalidParams, `Tool not available to this client: ${name}`);
@@ -47,11 +53,22 @@ function buildMcpServer(aggregator: Aggregator, clientFilter?: ToolFilter): Serv
     try {
       return await aggregator.callTool(name, args ?? {});
     } catch (err) {
+      if (err instanceof AuthRequiredError) throw await signInError({ aggregator, signIns, server: err.server });
       throw new McpError(ErrorCode.InternalError, String(err));
     }
   });
 
   return server;
+}
+
+/** Tells the agent how the user signs in: the link this daemon is waiting on, or why there is none. */
+async function signInError({ aggregator, signIns, server }: Omit<McpServerDeps, "clientFilter"> & { server: string }): Promise<McpError> {
+  const link = await signIns.link(aggregator, server);
+  if (!link) return new McpError(ErrorCode.InternalError, `${server} has its OAuth tokens now — call again`);
+  const how = "url" in link
+    ? `give the user this sign-in link as a clickable markdown link, then call again once they have approved: ${link.url}`
+    : `sign-in could not start (${link.error}); or run in a terminal: unimcp auth ${server}`;
+  return new McpError(ErrorCode.InternalError, `${server} needs OAuth sign-in — ${how}`);
 }
 
 export async function startManagedServer(opts: ManagedServerOptions): Promise<void> {
@@ -70,6 +87,8 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
   let isShuttingDown = false;
   // Each bridge holds a GET stream open: the one way to tell it, unasked, that the tools changed.
   const sessionServers = new Set<Server>();
+  // Outlives config reloads: a user may be mid-sign-in when the aggregator is swapped.
+  const signIns = new SignIns();
   const notifyToolsChanged = () => {
     for (const s of sessionServers) s.sendToolListChanged().catch((err) => log("[server] tools/list_changed failed:", String(err)));
   };
@@ -81,6 +100,11 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
       idleTimer = null;
       if (Date.now() - scheduledAt < IDLE_TIMEOUT_MS - 500) {
         log("[server] timer fired early (possible sleep) — rescheduling");
+        scheduleShutdown();
+        return;
+      }
+      if (signIns.isPending()) {
+        log("[server] a sign-in is waiting for its browser — deferring shutdown");
         scheduleShutdown();
         return;
       }
@@ -175,7 +199,7 @@ export async function startManagedServer(opts: ManagedServerOptions): Promise<vo
     }
 
     const clientFilter = parseToolFilterHeaders(req);
-    mcpServer = buildMcpServer(aggregator, clientFilter);
+    mcpServer = buildMcpServer({ aggregator, signIns, clientFilter });
     transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
     await mcpServer.connect(transport);

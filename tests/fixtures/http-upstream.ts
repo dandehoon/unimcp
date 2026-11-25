@@ -6,12 +6,17 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
-export type Upstream = { port: number; calls: number; stop: () => Promise<void> };
+/** `addTool` registers a tool on every open session, which announces it with `tools/list_changed`. */
+export type Upstream = { port: number; calls: number; stop: () => Promise<void>; addTool: (name: string) => void };
 
 /** `slow` holds every `slow` call until the promise settles. */
 export async function startUpstream(opts: { port?: number; slow?: Promise<void> } = {}): Promise<Upstream> {
   const sessions = new Map<string, StreamableHTTPServerTransport>();
-  const upstream = { port: 0, calls: 0, stop: async () => {} };
+  const servers: McpServer[] = [];
+  const upstream: Upstream = {
+    port: 0, calls: 0, stop: async () => {},
+    addTool: (name) => { for (const s of servers) s.registerTool(name, { description: name }, async () => ({ content: [] })); },
+  };
   const server = http.createServer(async (req, res) => {
     const body = req.method === "POST" ? JSON.parse(await readBody(req)) : undefined;
     const known = sessions.get(String(req.headers["mcp-session-id"]));
@@ -24,7 +29,9 @@ export async function startUpstream(opts: { port?: number; slow?: Promise<void> 
       sessionIdGenerator: randomUUID,
       onsessioninitialized: (id) => { sessions.set(id, transport); },
     });
-    await serverFor(upstream, opts.slow).connect(transport);
+    const mcp = serverFor(upstream, opts.slow);
+    servers.push(mcp);
+    await mcp.connect(transport);
     await transport.handleRequest(req, res, body);
   });
   await new Promise<void>((resolve) => server.listen(opts.port ?? 0, "127.0.0.1", resolve));
