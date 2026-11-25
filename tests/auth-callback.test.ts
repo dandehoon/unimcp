@@ -10,6 +10,11 @@ describe("parseCallback", () => {
     expect(parseCallback(redirect(`code=c1&state=${STATE}`), STATE)).toEqual({ code: "c1" });
   });
 
+  test("keeps the issuer the redirect names, for the exchange to check", () => {
+    expect(parseCallback(redirect(`code=c1&state=${STATE}&iss=https%3A%2F%2Fas.example`), STATE))
+      .toEqual({ code: "c1", iss: "https://as.example" });
+  });
+
   test("ignores another state or path", () => {
     expect(parseCallback(redirect("code=c1&state=other"), STATE)).toBeNull();
     expect(parseCallback(new URL(`http://localhost:4849/x?code=c1&state=${STATE}`), STATE)).toBeNull();
@@ -37,14 +42,14 @@ describe("listenForCallback paste", () => {
     paste.write("not a url\n");
     paste.write(`http://localhost:4849/callback?code=c1&state=other\n`);
     paste.write(`  ${redirect(`code=c2&state=${STATE}`).href}  \n`);
-    expect(await callback.code).toBe("c2");
+    expect(await callback.response).toEqual({ code: "c2" });
     callback.close(true);
   });
 
   test("a pasted denial rejects", async () => {
     const { paste, callback } = await listen();
     paste.write(`${redirect(`error=access_denied&state=${STATE}`).href}\n`);
-    await expect(callback.code).rejects.toThrow("authorization denied: access_denied");
+    await expect(callback.response).rejects.toThrow("authorization denied: access_denied");
     callback.close(false);
   });
 });

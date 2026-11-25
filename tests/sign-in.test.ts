@@ -10,8 +10,8 @@ import { callRefresh } from "../src/refresh.js";
 import { SignIns } from "../src/sign-in.js";
 
 // A minimal OAuth authorization server: metadata, dynamic registration, and a token endpoint that
-// accepts any code. `hang` leaves the metadata request unanswered.
-async function startAuthServer(opts: { hang?: boolean } = {}): Promise<string> {
+// accepts any code. `hang` leaves the metadata request unanswered; `namesIssuer` says redirects carry `iss` (RFC 9207).
+async function startAuthServer(opts: { hang?: boolean; namesIssuer?: boolean } = {}): Promise<string> {
   const server = http.createServer(async (req, res) => {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     const json = (body: unknown) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(body));
@@ -20,6 +20,7 @@ async function startAuthServer(opts: { hang?: boolean } = {}): Promise<string> {
       return json({
         issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`,
         registration_endpoint: `${base}/register`, response_types_supported: ["code"], code_challenge_methods_supported: ["S256"],
+        ...(opts.namesIssuer && { authorization_response_iss_parameter_supported: true }),
       });
     }
     if (req.url === "/register") return json({ ...(await readJson(req)), client_id: "test-client" });
@@ -55,7 +56,7 @@ function needingSignIn(srvs: Record<string, HttpServer>): Aggregator {
   } as unknown as Aggregator;
 }
 
-async function setup(opts: { hang?: boolean; startTimeoutMs?: number; hasBrowser?: boolean } = {}) {
+async function setup(opts: { hang?: boolean; namesIssuer?: boolean; startTimeoutMs?: number; hasBrowser?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "unimcp-signin-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const srv: HttpServer = { url: await startAuthServer(opts), auth: "oauth", oauth: { callbackPort: await freePort() } };
@@ -88,6 +89,15 @@ describe("SignIns", () => {
     expect(consent.pathname).toBe("/authorize");
 
     const res = await fetch(callbackOf(srv, consent.searchParams.get("state")), { headers: { cookie } });
+    expect(await res.text()).toContain("authorized");
+    expect(new FileOAuthProvider({ name: "test", srv, dir }).tokens()?.access_token).toBe("issued");
+  });
+
+  test("an authorization server that names itself on the redirect signs in", async () => {
+    const { dir, srv, signIns, aggregator } = await setup({ namesIssuer: true });
+    const { consent, cookie } = await openStart(await linkOf(signIns, aggregator));
+    const iss = encodeURIComponent(new URL(srv.url).origin);
+    const res = await fetch(`${callbackOf(srv, consent.searchParams.get("state"))}&iss=${iss}`, { headers: { cookie } });
     expect(await res.text()).toContain("authorized");
     expect(new FileOAuthProvider({ name: "test", srv, dir }).tokens()?.access_token).toBe("issued");
   });

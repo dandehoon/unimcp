@@ -1,7 +1,7 @@
 import http from "http";
 import { randomBytes } from "crypto";
 import readline from "readline";
-import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
+import { auth } from "@modelcontextprotocol/client";
 import type { FileOAuthProvider } from "./oauth.js";
 import { log } from "./utils.js";
 
@@ -11,7 +11,10 @@ const CALLBACK_TIMEOUT_MS = 5 * 60_000;
  * `close(isAuthorized)` answers the browser only once the code exchange has settled.
  * `startLink(consent)`: with `bindBrowser`, the local link that sends the browser on to `consent`.
  */
-export type Callback = { code: Promise<string>; close: (isAuthorized: boolean) => void; startLink: (consent: URL) => URL };
+export type Callback = { response: Promise<AuthorizationResponse>; close: (isAuthorized: boolean) => void; startLink: (consent: URL) => URL };
+
+/** `iss`: the issuer the redirect names (RFC 9207), checked against the one the flow began with. */
+export type AuthorizationResponse = { code: string; iss?: string };
 
 export type CallbackOptions = {
   redirectUrl: string;
@@ -28,7 +31,7 @@ export type CallbackOptions = {
   signal?: AbortSignal;
 };
 
-type CallbackOutcome = { code: string } | { error: string };
+type CallbackOutcome = AuthorizationResponse | { error: string };
 export type CallbackResult = CallbackOutcome | null;
 
 /**
@@ -39,7 +42,8 @@ export function parseCallback(url: URL, expectedState: string): CallbackResult {
   if (url.pathname !== "/callback" || url.searchParams.get("state") !== expectedState) return null;
   const error = url.searchParams.get("error");
   const code = url.searchParams.get("code");
-  if (code && !error) return { code };
+  const iss = url.searchParams.get("iss") ?? undefined;
+  if (code && !error) return { code, ...(iss && { iss }) };
   return { error: `authorization denied: ${error ? error.replace(/[^\w.:-]/g, "?") : "no code"}` };
 }
 
@@ -52,16 +56,19 @@ export async function beginAuthorization(
 ): Promise<(() => Promise<void>) | null> {
   const authOpts = { serverUrl, scope: provider.scope };
   if ((await auth(provider, authOpts)) !== "REDIRECT") return null;
-  return async () => { await auth(provider, { ...authOpts, authorizationCode: await callback.code }); };
+  return async () => {
+    const { code, iss } = await callback.response;
+    await auth(provider, { ...authOpts, authorizationCode: code, iss });
+  };
 }
 
 /** Waits for the authorization code on the redirect URL's port, or pasted into `opts.paste`. */
 export async function listenForCallback(opts: CallbackOptions): Promise<Callback> {
   let settle!: (result: CallbackOutcome) => void;
-  const code = new Promise<string>((resolve, reject) => {
-    settle = (r) => ("code" in r ? resolve(r.code) : reject(new Error(r.error)));
+  const response = new Promise<AuthorizationResponse>((resolve, reject) => {
+    settle = (r) => ("code" in r ? resolve(r) : reject(new Error(r.error)));
   });
-  code.catch(() => {}); // awaited only after the redirect; a rejection before then must not crash
+  response.catch(() => {}); // awaited only after the redirect; a rejection before then must not crash
   let pending: http.ServerResponse | null = null;
   const binding = opts.bindBrowser ? browserBinding(opts) : undefined;
 
@@ -83,7 +90,7 @@ export async function listenForCallback(opts: CallbackOptions): Promise<Callback
   opts.signal?.addEventListener("abort", () => settle({ error: "sign-in cancelled" }), { once: true });
 
   return {
-    code,
+    response,
     startLink: (consent) => {
       if (!binding) throw new Error("startLink needs bindBrowser");
       return binding.link(consent);

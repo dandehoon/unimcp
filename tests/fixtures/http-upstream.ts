@@ -2,20 +2,28 @@
 // a network outage, or a server restarted and forgetting its sessions.
 import http from "http";
 import { randomUUID } from "crypto";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { isInitializeRequest, McpServer } from "@modelcontextprotocol/server";
 
-/** `addTool` registers a tool on every open session, which announces it with `tools/list_changed`. */
-export type Upstream = { port: number; calls: number; stop: () => Promise<void>; addTool: (name: string) => void };
+/**
+ * `addTool` registers a tool on every open session, which announces it with `tools/list_changed`.
+ * `addResource` registers `note://<name>` on them and on every later session, announced with `resources/list_changed`;
+ * `note://base` is always there.
+ */
+export type Upstream = { port: number; calls: number; stop: () => Promise<void>; addTool: (name: string) => void; addResource: (name: string) => void };
 
 /** `slow` holds every `slow` call until the promise settles. */
 export async function startUpstream(opts: { port?: number; slow?: Promise<void> } = {}): Promise<Upstream> {
-  const sessions = new Map<string, StreamableHTTPServerTransport>();
+  const sessions = new Map<string, NodeStreamableHTTPServerTransport>();
   const servers: McpServer[] = [];
+  const resources: string[] = [];
   const upstream: Upstream = {
     port: 0, calls: 0, stop: async () => {},
     addTool: (name) => { for (const s of servers) s.registerTool(name, { description: name }, async () => ({ content: [] })); },
+    addResource: (name) => {
+      resources.push(name);
+      for (const s of servers) registerNote(s, name);
+    },
   };
   const server = http.createServer(async (req, res) => {
     const body = req.method === "POST" ? JSON.parse(await readBody(req)) : undefined;
@@ -25,11 +33,11 @@ export async function startUpstream(opts: { port?: number; slow?: Promise<void> 
       res.writeHead(400).end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Bad Request: No valid session ID provided" }, id: null }));
       return;
     }
-    const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
+    const transport: NodeStreamableHTTPServerTransport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: randomUUID,
       onsessioninitialized: (id) => { sessions.set(id, transport); },
     });
-    const mcp = serverFor(upstream, opts.slow);
+    const mcp = serverFor(upstream, resources, opts.slow);
     servers.push(mcp);
     await mcp.connect(transport);
     await transport.handleRequest(req, res, body);
@@ -47,8 +55,10 @@ export async function startUpstream(opts: { port?: number; slow?: Promise<void> 
   return upstream;
 }
 
-function serverFor(upstream: { calls: number }, slow?: Promise<void>): McpServer {
+function serverFor(upstream: { calls: number }, resources: string[], slow?: Promise<void>): McpServer {
   const server = new McpServer({ name: "http-fixture", version: "1.0.0" });
+  // One from the start: the SDK declares the resources capability only before it connects.
+  for (const name of ["base", ...resources]) registerNote(server, name);
   server.registerTool("ping", { description: "ping" }, async () => {
     upstream.calls++;
     return { content: [{ type: "text", text: "pong" }] };
@@ -58,6 +68,10 @@ function serverFor(upstream: { calls: number }, slow?: Promise<void>): McpServer
     return { content: [{ type: "text", text: "done" }] };
   });
   return server;
+}
+
+function registerNote(server: McpServer, name: string): void {
+  server.registerResource(name, `note://${name}`, {}, async (uri) => ({ contents: [{ uri: uri.href, text: name }] }));
 }
 
 async function readBody(req: http.IncomingMessage): Promise<string> {

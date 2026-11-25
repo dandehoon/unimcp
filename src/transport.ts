@@ -1,8 +1,6 @@
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import type { Transport } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { ProtocolError, SdkError, SdkErrorCode, SSEClientTransport, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { type ServerConfig, isHttpServer, isSseServer, isOAuthServer } from "./config.js";
 import { AuthRequiredError, FileOAuthProvider } from "./oauth.js";
 
@@ -61,9 +59,14 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, message: string)
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-/** Our deadline or the SDK's own request timeout: the server may be slow rather than gone. */
+/** The code a v1-SDK server (a proxy, say) answers a timed-out request with; v2 has no name for it. */
+const UPSTREAM_REQUEST_TIMEOUT = -32001;
+
+/** Our deadline, the SDK's own request timeout, or an upstream's: the server may be slow rather than gone. */
 export function isTimeout(err: unknown): boolean {
-  return err instanceof TimeoutError || (err instanceof McpError && err.code === ErrorCode.RequestTimeout);
+  return err instanceof TimeoutError
+    || (err instanceof SdkError && err.code === SdkErrorCode.RequestTimeout)
+    || (err instanceof ProtocolError && err.code === UPSTREAM_REQUEST_TIMEOUT);
 }
 
 const NOT_DELIVERED = ["econnrefused", "unable to connect", "not connected", "session not found", "no valid session", "session-id header is required", "server not initialized"];

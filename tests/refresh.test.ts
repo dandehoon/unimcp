@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { McpError } from "@modelcontextprotocol/sdk/types.js";
+import { ProtocolError } from "@modelcontextprotocol/server";
 import { Aggregator } from "../src/aggregator.js";
 import type { Config } from "../src/config.js";
 import { callRefresh } from "../src/refresh.js";
@@ -33,7 +33,7 @@ describe("unimcp__refresh", () => {
   test("rejects an unknown server, naming the known ones", async () => {
     const aggregator = await connected();
     const call = callRefresh({ aggregator, args: { servers: ["nope"] } });
-    await expect(call).rejects.toBeInstanceOf(McpError);
+    await expect(call).rejects.toBeInstanceOf(ProtocolError);
     await expect(call).rejects.toThrow("Known: up");
   });
 

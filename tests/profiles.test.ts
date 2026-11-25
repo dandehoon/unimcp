@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/client";
 import type { Profile, ServerConfig } from "../src/config.js";
 import { expandProfiles, findServer, routeProfile, withProfileArg, withoutPinnedArgs } from "../src/profiles.js";
 import { Aggregator } from "../src/aggregator.js";

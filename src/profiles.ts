@@ -1,4 +1,4 @@
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/client";
 import type { Config, Profile, ProfileVars, ServerConfig } from "./config.js";
 
 /** The argument that picks a profile on every call to a server with profiles. */
